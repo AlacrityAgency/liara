@@ -1,0 +1,10 @@
+{
+    "name":  "@sokan/analyzer",
+    "version":  "0.1.0",
+    "description":  "Static project analyzer and platform detection engine for Sokan",
+    "main":  "../../build/analyzer/src/index.js",
+    "dependencies":  {
+                         "@sokan/contracts":  "*"
+                     },
+    "private":  true
+}

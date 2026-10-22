@@ -1,0 +1,10 @@
+{
+    "name":  "@sokan/policy",
+    "version":  "0.1.0",
+    "description":  "Policy Engine, Risk Classifier, Secret Redactor, and HMAC Token Guard for Sokan",
+    "main":  "../../build/policy/src/index.js",
+    "dependencies":  {
+                         "@sokan/contracts":  "*"
+                     },
+    "private":  true
+}
