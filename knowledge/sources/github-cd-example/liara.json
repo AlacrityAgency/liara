@@ -1,0 +1,9 @@
+{
+    "platform": "node",
+    "app": "github-cd-example",
+    "port": 8000,
+    "node": {
+        "version": "18",
+        "timezone": "Asia/tehran"
+    }
+}
