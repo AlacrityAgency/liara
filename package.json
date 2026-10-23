@@ -1,0 +1,20 @@
+{
+  "name": "sokan-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sokan (سُکان) — DevOps/SRE assistant for Liara. Local demo build; see README.",
+  "workspaces": [
+    "packages/*",
+    "demo/*"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test tests/sokan.test.js",
+    "start": "npm run build && node apps/web/server.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.3"
+  }
+}
