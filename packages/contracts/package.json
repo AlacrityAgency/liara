@@ -1,0 +1,16 @@
+{
+    "name":  "@sokan/contracts",
+    "version":  "0.1.0",
+    "description":  "Core TypeScript schemas and interface contracts for Sokan DevOps \u0026 SRE platform",
+    "main":  "../../build/contracts/src/index.js",
+    "keywords":  [
+                     "sokan",
+                     "liara",
+                     "devops",
+                     "sre",
+                     "contracts"
+                 ],
+    "author":  "Sokan Team",
+    "license":  "MIT",
+    "private":  true
+}
