@@ -257,3 +257,154 @@ describe("Sokan console server (WEB_CONTRACT)", () => {
     assert.ok(gone, "simulated target port is closed");
   });
 });
+
+// ---------- simulated scenarios through a real console (scenario-3 leak, scenario-4 CPU) ----------
+// Each describe starts its own console and simulated target, so earlier scenarios cannot leak into these windows.
+
+async function startConsole() {
+  const sokanPort = await freePort();
+  const chaosPort = await freePort();
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sokan-web-sim-"));
+  const base = `http://127.0.0.1:${sokanPort}`;
+  const env = {
+    PATH: process.env.PATH || "",
+    HOME: process.env.HOME || os.tmpdir(),
+    SOKAN_CONSOLE_TOKEN: TOKEN,
+    SOKAN_PORT: String(sokanPort),
+    CHAOS_PORT: String(chaosPort),
+    SOKAN_STATE_DIR: stateDir,
+  };
+  const child = spawn(process.execPath, [SERVER], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
+  let exitInfo = null;
+  child.on("exit", (code, signal) => {
+    exitInfo = { code, signal };
+  });
+  await new Promise((resolve, reject) => {
+    let out = "";
+    const timer = setTimeout(() => reject(new Error(`server did not start: ${out}`)), 15000);
+    child.stdout.on("data", (d) => {
+      out += d.toString();
+      if (out.includes("Sokan console:")) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+    child.stderr.on("data", (d) => { out += d.toString(); });
+  });
+  const call = async (method, urlPath, body) => {
+    const res = await fetch(`${base}${urlPath}`, {
+      method,
+      headers: { "X-Sokan-Token": TOKEN, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+    return { status: res.status, json };
+  };
+  const healthy = await waitFor(async () => (await call("GET", "/api/state")).json?.probes?.some((p) => p.status === 200), 15000);
+  assert.ok(healthy, "simulated target is healthy");
+  const stop = async () => {
+    if (exitInfo === null) {
+      child.kill("SIGTERM");
+      await waitFor(() => exitInfo !== null, 8000, 100);
+    }
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  };
+  return { call, stop };
+}
+
+describe("Simulated scenario-3: memory leak until OOM", { timeout: 90000 }, () => {
+  let srv;
+  before(async () => {
+    srv = await startConsole();
+  });
+  after(async () => {
+    if (srv) await srv.stop();
+  });
+
+  it("the target is OOM-killed inside the demo window and its restarts are visible", { timeout: 60000 }, async () => {
+    const demo = await srv.call("POST", "/api/demo/scenario-3-leak", {});
+    assert.strictEqual(demo.status, 200);
+    assert.strictEqual(demo.json.ok, true);
+    const state = await srv.call("GET", "/api/state");
+    assert.ok(state.json.events.some((e) => e.type === "crash" && /OOMKilled/.test(e.message)), "OOMKilled exit recorded");
+    assert.ok(state.json.logs.some((l) => /OOMKilled/.test(l.line)), "OOM line in the logs");
+    assert.ok(state.json.app.restarts >= 1, "restart counted");
+  });
+
+  it("chat diagnoses oom_leak on top, with an app_restart card and undersized_plan contradicted", { timeout: 60000 }, async () => {
+    const chat = await srv.call("POST", "/api/chat", { message: "رم زیاد مصرف میشه چرا کنده" });
+    assert.strictEqual(chat.status, 200);
+    const incident = chat.json.incident;
+    assert.ok(incident, "incident returned");
+    const top = incident.hypotheses[0];
+    assert.strictEqual(top.id, "hyp_oom_leak", incident.hypotheses.map((h) => `${h.id}=${h.score}`).join(", "));
+    assert.strictEqual(top.confidence, "high");
+    assert.deepStrictEqual(top.remediations.map((r) => r.action), ["app_restart", "coding_agent_handoff"]);
+    const restart = chat.json.approvals.find((a) => a.tool === "app_restart");
+    assert.ok(restart, "app_restart approval created");
+    assert.strictEqual(restart.status, "pending");
+    const undersized = incident.hypotheses.find((h) => h.id === "hyp_undersized_plan");
+    if (undersized) assert.ok(undersized.evidence_against.length > 0, "undersized_plan has evidence against it");
+    assert.ok(!incident.signals.some((s) => s.kind === "APP_STOPPED"), "a restarting target is not reported as stopped");
+  });
+});
+
+describe("Simulated scenario-4: sustained CPU load on /api/products", { timeout: 90000 }, () => {
+  let srv;
+  before(async () => {
+    srv = await startConsole();
+  });
+  after(async () => {
+    if (srv) await srv.stop();
+  });
+
+  it("the load produces several CPU samples and probes of the slow path", { timeout: 60000 }, async () => {
+    const demo = await srv.call("POST", "/api/demo/scenario-4-cpu", {});
+    assert.strictEqual(demo.status, 200);
+    const state = await srv.call("GET", "/api/state");
+    const products = state.json.probes.filter((p) => p.path === "/api/products");
+    assert.ok(products.length >= 2, "/api/products was probed during the load");
+  });
+
+  it("chat diagnoses cpu_saturation on top, with an app_resize_plan card", { timeout: 60000 }, async () => {
+    const chat = await srv.call("POST", "/api/chat", { message: "سایت خیلی کند شده" });
+    assert.strictEqual(chat.status, 200);
+    const incident = chat.json.incident;
+    assert.ok(incident, "incident returned");
+    const top = incident.hypotheses[0];
+    assert.strictEqual(top.id, "hyp_cpu_saturation", incident.hypotheses.map((h) => `${h.id}=${h.score}`).join(", "));
+    assert.ok(top.remediations.some((r) => r.action === "app_resize_plan"));
+    const resize = chat.json.approvals.find((a) => a.tool === "app_resize_plan");
+    assert.ok(resize, "app_resize_plan approval created");
+    assert.strictEqual(resize.status, "pending");
+    assert.ok(!incident.hypotheses.some((h) => h.id === "hyp_code_exception"), "no code exception offered without an error");
+  });
+});
+
+describe("ChaosRuntime process generations", () => {
+  const { ChaosRuntime } = require("../apps/web/lib/runtime.js");
+  const T = (s) => new Date(Date.UTC(2026, 9, 23, 10, 0, s)).toISOString();
+
+  it("maps a timestamp to the process that was alive then, and resetHistory keeps only the running one", () => {
+    const rt = new ChaosRuntime({ onLine() {}, onEvent() {} });
+    rt.generations = [
+      { gen: 1, pid: 11, startedAt: T(0), endedAt: T(5) },
+      { gen: 2, pid: 12, startedAt: T(6), endedAt: null },
+    ];
+    rt.crashes = 3;
+    rt.lastCrash = { at: T(5), reason: "OOMKilled" };
+    assert.strictEqual(rt.generationAt(T(3)), 1);
+    assert.strictEqual(rt.generationAt(T(5.5)), null, "between two processes there is no generation");
+    assert.strictEqual(rt.generationAt(T(9)), 2);
+    rt.resetHistory();
+    assert.strictEqual(rt.crashes, 0);
+    assert.strictEqual(rt.lastCrash, null);
+    assert.deepStrictEqual(rt.generations.map((g) => g.gen), [2]);
+  });
+});

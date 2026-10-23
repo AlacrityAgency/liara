@@ -691,3 +691,177 @@ describe("Runbook catalog (WHITEPAPER §8.5)", () => {
     for (const c of probeCriteria) assert.strictEqual(c.path, "/api/items");
   });
 });
+
+// ---------- golden evidence from the simulated target (WEB scenario-3 leak and scenario-4 CPU) ----------
+// The shapes below are what apps/web/lib/evidence.js produces for the chaos-shop child process.
+
+const ramp = (startMb, stepMb, n, stepSec = 1, startMin = 0) =>
+  Array.from({ length: n }, (_, i) => ({ ts: at(startMin, i * stepSec), mb: startMb + stepMb * i }));
+
+const SIM_APP = { name: "chaos-shop", port: 3100, envKeys: ["DATABASE_URL", "CHAOS_LEAK", "CHAOS_MEM_LIMIT_MB"], scale: 1 };
+const LOCAL_RELEASE = { id: "rel_9f3a1c", state: "READY", createdAt: at(-26), finishedAt: at(-25), source: "local" };
+
+/** scenario-3: leak with a 120 MB container cap; the first container is OOM-killed after about ten seconds. */
+function simOomLeakEvidence(over = {}) {
+  return ev({
+    app: { ...SIM_APP, memoryLimitMB: 120, memoryLimitLabel_fa: "سقف کانتینر آزمایشی" },
+    applets: [{ state: "restarting", reason: "OOMKilled", restarts: 2, release: "rel_9f3a1c" }],
+    events: [
+      { id: "evt_1", ts: at(0, 0), type: "start", message: "process started pid=101 port=3100" },
+      { id: "evt_2", ts: at(0, 10), type: "crash", message: "container exited unexpectedly: OOMKilled" },
+      { id: "evt_3", ts: at(0, 12), type: "start", message: "process started pid=102 port=3100" },
+      { id: "evt_4", ts: at(0, 22), type: "crash", message: "container exited unexpectedly: OOMKilled" },
+    ],
+    releases: [LOCAL_RELEASE],
+    memory: ramp(46, 8, 11),
+    cpu: [],
+    logs: [
+      L(0, "[mem] rss=46MB heap=5MB", 2),
+      L(0, "[mem] rss=70MB heap=5MB", 4),
+      L(0, "[mem] rss=94MB heap=5MB", 6),
+      L(0, "[mem] rss=110MB heap=5MB", 8),
+      L(0, "FATAL: Container memory limit exceeded (rss=124MB limit=120MB) — OOMKilled", 10),
+      L(0, "[SOKAN_RUNNER] target process stopped: OOMKilled", 10),
+    ],
+    probes: [
+      P(0, "/health", 200, 3, 1),
+      P(0, "/health", 200, 3, 5),
+      P(0, "/health", null, 3, 10),
+      P(0, "/health", 200, 3, 16),
+    ],
+    window: { start: at(-1), end: at(0, 30) },
+    ...over,
+  });
+}
+
+/** scenario-4: sustained busy loop on /api/products; RSS stays flat; a few slow probes. */
+function simCpuEvidence(over = {}) {
+  return ev({
+    app: { ...SIM_APP, memoryLimitMB: 512, memoryLimitLabel_fa: "سقف پلن", scale: 1 },
+    applets: [{ state: "running", restarts: 0, release: "rel_9f3a1c" }],
+    events: [{ id: "evt_1", ts: at(0, 0), type: "start", message: "process started pid=201 port=3100" }],
+    releases: [LOCAL_RELEASE],
+    memory: ramp(44, 0, 1).concat(ramp(45, 0.5, 6, 1, 0).map((p, i) => ({ ts: at(0, i + 1), mb: [45, 44, 46, 45, 45, 44][i] }))),
+    cpu: [99, 100, 98, 100, 99, 100, 99, 100, 97].map((pct, i) => ({ ts: at(0, i + 1), pct })),
+    logs: [
+      L(0, "[CHAOS_CPU] busy loop 512ms on /api/products", 1),
+      L(0, "[access] GET /api/products 200 812ms", 2),
+      L(0, "prisma:query SELECT * FROM \"Review\" WHERE \"productId\" = 1 LIMIT 10", 2),
+      L(0, "[CHAOS_CPU] busy loop 640ms on /api/products", 3),
+      L(0, "[access] GET /api/products 200 1190ms", 4),
+    ],
+    probes: [
+      P(0, "/health", 200, 4, 2),
+      P(0, "/api/products", 200, 2500, 2),
+      P(0, "/api/products", 200, 3100, 5),
+      P(0, "/api/products", 200, 3900, 8),
+    ],
+    window: { start: at(-1), end: at(0, 30) },
+    ...over,
+  });
+}
+
+const STALE_EXCEPTION = [
+  L(-20, "PrismaClientInitializationError: Environment variable not found: DATABASE_URL", 0),
+  L(-20, "    at PrismaClient.initialize (src/db/client.js:24:11)", 0),
+];
+
+describe("Golden evidence from the simulated target: OOM and leak (scenario-3)", () => {
+  it("OOM plus leak in the simulated shape gives oom_leak on top, with app_restart and a Fix Brief", () => {
+    const incident = DiagnosticEngine.diagnose(simOomLeakEvidence(), SYMPTOM);
+    assert.strictEqual(incident.hypotheses[0].id, "hyp_oom_leak",
+      incident.hypotheses.map((h) => `${h.id}=${h.score}`).join(", "));
+    assert.strictEqual(incident.hypotheses[0].confidence, "high");
+    const kinds = incident.signals.map((s) => s.kind);
+    assert.ok(kinds.includes("OOM_KILLED") && kinds.includes("MEMORY_LEAK_TREND") && kinds.includes("MEMORY_PRESSURE"));
+    assert.ok(!kinds.includes("APP_STOPPED"), "a restarting container is not a stopped app");
+    const actions = incident.hypotheses[0].remediations.map((r) => r.action);
+    assert.deepStrictEqual(actions, ["app_restart", "coding_agent_handoff"]);
+  });
+
+  it("undersized_plan is listed with the leak trend as evidence against it", () => {
+    const incident = DiagnosticEngine.diagnose(simOomLeakEvidence(), SYMPTOM);
+    const undersized = incident.hypotheses.find((h) => h.id === "hyp_undersized_plan");
+    assert.ok(undersized, "undersized_plan is still listed");
+    assert.ok(undersized.evidence_against.length > 0, "evidence_against is filled");
+    assert.ok(undersized.evidence_against.some((ref) => /positive linear trend/.test(
+      incident.evidence.find((e) => e.id === ref)?.summary ?? ""
+    )), "the contradicting evidence is the memory trend");
+  });
+
+  it("an OOM exit identified only by its event still produces OOM_KILLED", () => {
+    const { signals } = extractSignals(ev({
+      events: [{ id: "evt_1", ts: at(0, 10), type: "crash", message: "container exited unexpectedly: exit code 137" }],
+    }));
+    const oom = signals.find((s) => s.kind === "OOM_KILLED");
+    assert.ok(oom, "exit code 137 is an OOM kill");
+    assert.ok(oom.evidence.length >= 1);
+  });
+
+  it("a crash loop caused by OOM kills does not outrank oom_leak, even with a stale exception in the window", () => {
+    const data = simOomLeakEvidence({
+      applets: [{ state: "restarting", reason: "OOMKilled", restarts: 3, release: "rel_9f3a1c" }],
+      logs: [...simOomLeakEvidence().logs, ...STALE_EXCEPTION],
+    });
+    const incident = DiagnosticEngine.diagnose(data, SYMPTOM);
+    assert.ok(incident.signals.some((s) => s.kind === "CRASH_LOOP"), "the restarts are visible as a crash loop");
+    assert.ok(incident.signals.some((s) => s.kind === "APP_EXCEPTION"), "the stale exception is visible");
+    assert.strictEqual(incident.hypotheses[0].id, "hyp_oom_leak");
+    const crash = incident.hypotheses.find((h) => h.id === "hyp_crash_loop");
+    if (crash) assert.ok(crash.evidence_against.length > 0, "OOM is listed against crash_loop");
+  });
+
+  it("upstream_slow does not fire on slow probes that coincide with memory pressure and OOM", () => {
+    const data = simOomLeakEvidence({
+      probes: [
+        P(0, "/api/products", 200, 6500, 1),
+        P(0, "/api/products", 200, 6900, 3),
+        P(0, "/health", null, 3, 10),
+      ],
+    });
+    const incident = DiagnosticEngine.diagnose(data, SYMPTOM);
+    assert.ok(!incident.signals.some((s) => s.kind === "UPSTREAM_SLOW"), "slow probes alone are not upstream evidence");
+    assert.notStrictEqual(incident.hypotheses[0].id, "hyp_upstream_slow");
+  });
+
+  it("upstream_slow still fires when the timeouts are logged against an external host", () => {
+    const data = simOomLeakEvidence({
+      logs: [
+        ...simOomLeakEvidence().logs,
+        L(0, "upstream timeout after 2000ms: GET https://api.payment.example/v1/rates", 9),
+      ],
+    });
+    const incident = DiagnosticEngine.diagnose(data, SYMPTOM);
+    assert.ok(incident.signals.some((s) => s.kind === "UPSTREAM_SLOW"));
+  });
+});
+
+describe("Golden evidence from the simulated target: CPU saturation (scenario-4)", () => {
+  it("sustained CPU at ~100 percent gives cpu_saturation on top, with a resize card", () => {
+    const incident = DiagnosticEngine.diagnose(simCpuEvidence(), "سایت خیلی کند شده");
+    assert.strictEqual(incident.hypotheses[0].id, "hyp_cpu_saturation",
+      incident.hypotheses.map((h) => `${h.id}=${h.score}`).join(", "));
+    assert.strictEqual(incident.hypotheses[0].confidence, "high");
+    assert.ok(incident.hypotheses[0].remediations.some((r) => r.action === "app_resize_plan"));
+    assert.ok(!incident.signals.some((s) => s.kind === "MEMORY_LEAK_TREND"), "flat RSS is not a leak");
+  });
+
+  it("a single stale exception does not outrank saturated CPU, and is rejected by it", () => {
+    const data = simCpuEvidence({ logs: [...simCpuEvidence().logs, ...STALE_EXCEPTION] });
+    const incident = DiagnosticEngine.diagnose(data, "سایت خیلی کند شده");
+    assert.strictEqual(incident.hypotheses[0].id, "hyp_cpu_saturation");
+    assert.ok(!incident.hypotheses.some((h) => h.id === "hyp_code_exception"), "code_exception is not offered");
+    const rejected = incident.rejected.find((r) => r.title_fa === STANDARD_RUNBOOKS.find((rb) => rb.id === "code_exception").title_fa);
+    assert.ok(rejected, "code_exception is listed as rejected");
+    assert.ok(rejected.reason_fa.includes("CPU_SATURATION"));
+  });
+
+  it("three busy samples in a long idle series do not count as saturation (p95 stays low)", () => {
+    const pcts = Array.from({ length: 100 }, (_, i) => (i >= 97 ? 95 : 10));
+    const { signals } = extractSignals(simCpuEvidence({ cpu: pcts.map((pct, i) => ({ ts: at(0, i), pct })) }));
+    assert.ok(!signals.some((s) => s.kind === "CPU_SATURATION"));
+    const busy = Array.from({ length: 100 }, (_, i) => (i >= 2 ? 95 : 10));
+    const { signals: more } = extractSignals(simCpuEvidence({ cpu: busy.map((pct, i) => ({ ts: at(0, i), pct })) }));
+    assert.ok(more.some((s) => s.kind === "CPU_SATURATION"), "a sustained run does");
+  });
+});

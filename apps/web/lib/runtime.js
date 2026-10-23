@@ -26,6 +26,27 @@ class ChaosRuntime {
     this.starts = 0;
     this.lastCrash = null;
     this.cpuPrev = null;
+    // One entry per child process: gen (same counter as `starts`), pid and its lifetime. Metric series are
+    // split by generation so a restart does not look like a drop in a leak trend.
+    this.generations = [];
+  }
+
+  /** Forgets crash counts and finished generations. Used when a demo scenario starts its own observation. */
+  resetHistory() {
+    this.crashes = 0;
+    this.lastCrash = null;
+    this.generations = this.generations.filter((g) => !g.endedAt);
+  }
+
+  /** Process generation that was alive at `ts` (ISO string), or null when no child was running then. */
+  generationAt(ts) {
+    const t = Date.parse(ts);
+    for (let i = this.generations.length - 1; i >= 0; i--) {
+      const g = this.generations[i];
+      const end = g.endedAt ? Date.parse(g.endedAt) : Infinity;
+      if (t >= Date.parse(g.startedAt) && t <= end) return g.gen;
+    }
+    return null;
   }
 
   get running() {
@@ -112,6 +133,8 @@ class ChaosRuntime {
     this.child = proc;
     this.starts += 1;
     this.cpuPrev = null;
+    this.generations.push({ gen: this.starts, pid: proc.pid, startedAt: new Date().toISOString(), endedAt: null });
+    if (this.generations.length > 20) this.generations.shift();
     this.hooks.onEvent({ type: "start", message: `process started pid=${proc.pid} port=${this.port}` });
 
     const buffers = { stdout: "", stderr: "" };
@@ -137,6 +160,8 @@ class ChaosRuntime {
       }
       // Race fix: a previous child exiting late must not clear the reference to the current one.
       if (this.child === proc) this.child = null;
+      const gen = this.generations.find((g) => g.pid === proc.pid && !g.endedAt);
+      if (gen) gen.endedAt = new Date().toISOString();
       const intentional = proc.__sokanStopping === true;
       const reason = code === 137 ? "OOMKilled" : signal ? `signal ${signal}` : `exit code ${code}`;
       this.hooks.onLine(`[SOKAN_RUNNER] target process stopped: ${reason}${intentional ? " (requested)" : ""}`, "system");

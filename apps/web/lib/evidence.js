@@ -9,7 +9,37 @@ const { DEMO_DIR, TARGET_NAME } = require("./core");
 const RESTART_RE = /restart|crash|exit code|back-?off|OOMKilled/i;
 // Startup lines that name a port; only the current process generation is evidence.
 const LISTEN_RE = /listening (?:on|at)\s+(?:port\s+)?\d{2,5}/i;
+// Periodic memory line printed by chaos-shop: "[mem] rss=54MB heap=5MB".
+const MEM_LINE_RE = /^\[mem\] rss=(\d+)MB/;
 let planCache = { at: 0, plans: null };
+
+/** Keeps the points of one process generation: the one with the most points, ties go to the newer one. */
+function mostPointsGeneration(points) {
+  const byGen = new Map();
+  for (const p of points) {
+    if (p.gen === null) continue;
+    if (!byGen.has(p.gen)) byGen.set(p.gen, []);
+    byGen.get(p.gen).push(p);
+  }
+  let best = [];
+  let bestGen = -1;
+  for (const [gen, list] of byGen) {
+    if (list.length > best.length || (list.length === best.length && gen > bestGen)) {
+      best = list;
+      bestGen = gen;
+    }
+  }
+  return best;
+}
+
+/** Points of the newest process generation that has any. A restart starts a fresh CPU series. */
+function newestGeneration(points) {
+  let newest = null;
+  for (const p of points) {
+    if (p.gen !== null && (newest === null || p.gen > newest)) newest = p.gen;
+  }
+  return newest === null ? [] : points.filter((p) => p.gen === newest);
+}
 
 /** Live plan catalogue, cached for ten minutes. Null when the API call fails. */
 async function livePlans(core) {
@@ -26,7 +56,10 @@ function simulatedEvidence(core, windowStart) {
   const inWindow = (ts) => Date.parse(ts) >= startMs;
   const envs = core.app.appEnvs;
   const running = core.runtime.running;
+  const restarting = !running && core.runtime.desired;
   const lastCrash = core.runtime.lastCrash;
+  const runtime = core.runtime;
+  const generationOf = (ts) => runtime.generationAt(ts);
   const currentRelease = core.releases[core.releases.length - 1];
   let disk = null;
   try {
@@ -40,12 +73,13 @@ function simulatedEvidence(core, windowStart) {
       name: TARGET_NAME,
       port: core.app.port,
       envKeys: Object.keys(envs).filter((k) => envs[k] !== undefined && envs[k] !== ""),
-      scale: running ? 1 : 0,
+      // A crashed container that the platform is about to restart is still scaled to one.
+      scale: running || restarting ? 1 : 0,
       memoryLimitMB: core.memoryLimitMB(),
       memoryLimitLabel_fa: core.app.appEnvs.CHAOS_MEM_LIMIT_MB ? "سقف کانتینر آزمایشی" : "سقف پلن",
     },
     applets: [{
-      state: running ? "running" : core.app.deleted ? "deleted" : "stopped",
+      state: running ? "running" : core.app.deleted ? "deleted" : restarting ? "restarting" : "stopped",
       reason: lastCrash && inWindow(lastCrash.at) ? lastCrash.reason : undefined,
       restarts: core.runtime.crashes,
       release: currentRelease?.id,
@@ -54,10 +88,22 @@ function simulatedEvidence(core, windowStart) {
     releases: core.releases.map((r) => ({
       id: r.id, state: r.state, createdAt: r.createdAt, finishedAt: r.finishedAt, envKeys: r.envKeys, message: r.message, source: "local",
     })),
-    memory: core.probes
-      .filter((p) => inWindow(p.ts) && p.path === "/health" && typeof p.rssMB === "number")
-      .map((p) => ({ ts: p.ts, mb: p.rssMB })),
-    cpu: core.cpuSamples.filter((c) => inWindow(c.ts)).map((c) => ({ ts: c.ts, pct: c.pct })),
+    // RSS of one process: from /health probes and the [mem] log lines, whichever generation has most points.
+    memory: mostPointsGeneration([
+      ...core.probes
+        .filter((p) => inWindow(p.ts) && p.path === "/health" && typeof p.rssMB === "number")
+        .map((p) => ({ ts: p.ts, mb: p.rssMB, gen: generationOf(p.ts) })),
+      ...core.logs
+        .filter((l) => inWindow(l.ts) && MEM_LINE_RE.test(l.line))
+        .map((l) => ({ ts: l.ts, mb: Number(l.line.match(MEM_LINE_RE)[1]), gen: generationOf(l.ts) })),
+    ])
+      .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
+      .map((p) => ({ ts: p.ts, mb: p.mb })),
+    cpu: newestGeneration(
+      core.cpuSamples
+        .filter((c) => inWindow(c.ts))
+        .map((c) => ({ ts: c.ts, pct: c.pct, gen: generationOf(c.ts) }))
+    ).map((c) => ({ ts: c.ts, pct: c.pct })),
     logs: core.logs
       .filter((l) => inWindow(l.ts) && (!LISTEN_RE.test(l.line) || l.gen === core.runtime.starts))
       .map((l) => ({ id: l.id, ts: l.ts, text: l.line })),

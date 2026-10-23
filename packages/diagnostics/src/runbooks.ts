@@ -439,7 +439,7 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
     prior: -0.5,
     requiredSignals: ["UPSTREAM_SLOW"],
     weights: { UPSTREAM_SLOW: 2.5, APP_EXCEPTION: 0.3 },
-    against: { CPU_SATURATION: 2, MEMORY_PRESSURE: 1.5 },
+    against: { CPU_SATURATION: 2, MEMORY_PRESSURE: 1.5, OOM_KILLED: 2, CRASH_LOOP: 1.5 },
     dependsOn: ["http_probe", "logs_get"],
     explain_fa: "کندی از سرویس خارجی یا وابستگی بیرونی می‌آید؛ منابع خود برنامه (CPU و RAM) فشار ندارند.",
     confirmingTest_fa: "بررسی زمان پاسخ میزبان خارجی و تایم‌اوت‌ها در لاگ، با CPU و RAM عادی",
@@ -467,7 +467,8 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
     prior: -0.5,
     requiredSignals: ["CRASH_LOOP", "APP_EXCEPTION"],
     weights: { CRASH_LOOP: 2.5, APP_EXCEPTION: 1.5, DEPLOY_REGRESSION: 0.8 },
-    against: { APP_STOPPED: 2 },
+    // Exits caused by OOM kills belong to oom_leak / undersized_plan, not to a boot exception.
+    against: { APP_STOPPED: 2, OOM_KILLED: 2 },
     dependsOn: ["applets_get", "logs_get"],
     explain_fa: "برنامه پشت سر هم کرش می‌کند و دوباره اجرا می‌شود؛ استثنای تکرارشونده در لاگ علت احتمالی است.",
     confirmingTest_fa: "استخراج stack trace آخرین کرش و تطبیق با زمان ری‌استارت‌ها",
@@ -534,7 +535,8 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
     prior: -1,
     requiredSignals: ["APP_EXCEPTION"],
     weights: { APP_EXCEPTION: 2 },
-    against: {},
+    // A few stray errors do not explain a saturated resource: the saturation wins.
+    against: { CPU_SATURATION: 1.5, MEMORY_PRESSURE: 1, OOM_KILLED: 1.5 },
     dependsOn: ["logs_get"],
     explain_fa: "یک استثنای مدیریت‌نشده در کد برنامه رخ داده که باعث بازگرداندن خطای داخلی سرور می‌شود.",
     confirmingTest_fa: "استخراج stack trace و تعیین فایل و خط دقیق خطا",

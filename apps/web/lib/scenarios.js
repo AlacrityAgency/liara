@@ -34,8 +34,21 @@ function clearIncident(core) {
   core.state.pipeline = { stage: "idle", steps: [] };
 }
 
+/**
+ * Each scenario that starts the target observes only its own run: earlier logs, events, probes, CPU samples and
+ * crash counts are dropped, so an OOM from one demo cannot leak into the diagnosis of the next.
+ */
+function resetObservation(core) {
+  core.logs.length = 0;
+  core.events.length = 0;
+  core.probes.length = 0;
+  core.cpuSamples.length = 0;
+  core.runtime.resetHistory();
+}
+
 /** Restarts the simulated target with the given app envs and configured port. */
 async function startTarget(core, envs, port = core.app.basePort) {
+  resetObservation(core);
   core.app.appEnvs = { ...envs };
   for (const value of Object.values(core.app.appEnvs)) core.registerSecret(value);
   core.app.port = port;
@@ -67,6 +80,48 @@ async function burst(core, urlPath, count, spacingMs) {
   }
 }
 
+const CPU_SAMPLE_CAP = 100;
+
+/**
+ * Drives steady concurrent load on `urlPath` for `durationMs`. While it runs, CPU of the child is sampled
+ * every `sampleEveryMs` (one series point per sample) and the path is probed about every `probeEveryMs`,
+ * so the probes see the latency the load causes.
+ */
+async function sustainedLoad(core, urlPath, { durationMs, clients = 4, sampleEveryMs = 1000, probeEveryMs = 2000 }) {
+  const deadline = Date.now() + durationMs;
+  const workers = Array.from({ length: clients }, async () => {
+    while (Date.now() < deadline) await burst(core, urlPath, 1, 0);
+  });
+  const sampler = (async () => {
+    let lastProbe = 0;
+    while (Date.now() < deadline) {
+      await core.sleep(sampleEveryMs);
+      const sample = core.runtime.cpuSample();
+      if (sample) {
+        core.cpuSamples.push(sample);
+        if (core.cpuSamples.length > CPU_SAMPLE_CAP) core.cpuSamples.shift();
+      }
+      if (Date.now() - lastProbe >= probeEveryMs) {
+        lastProbe = Date.now();
+        await core.probeNow(urlPath);
+      }
+    }
+  })();
+  await Promise.all([...workers, sampler]);
+}
+
+/** Probes /health about once a second until the first container exit (or `maxMs`), so RSS points accumulate. */
+async function watchUntilCrash(core, { maxMs = 14000, everyMs = 1000 }) {
+  const deadline = Date.now() + maxMs;
+  const crashesAtStart = core.runtime.crashes;
+  while (Date.now() < deadline) {
+    await core.probeNow("/health");
+    if (core.runtime.crashes > crashesAtStart) break;
+    await core.sleep(everyMs);
+  }
+  await core.probeNow("/health");
+}
+
 function reply(core, scenario, message_fa, extra = {}) {
   return { status: 200, body: { ok: true, scenario, mode: core.mode(), message_fa: core.mode() === "simulated" ? `(شبیه‌سازی محلی) ${message_fa}` : message_fa, ...extra } };
 }
@@ -96,16 +151,18 @@ const HANDLERS = {
   async "scenario-3-leak"(core) {
     cancelPending(core);
     clearIncident(core);
-    await startTarget(core, { ...SIM_DEFAULT_ENVS, CHAOS_LEAK: "1", CHAOS_MEM_LIMIT_MB: "100" });
-    return reply(core, "scenario-3-leak", "نشت حافظه فعال شد؛ RSS رو به رشد است و سقف کانتینر ۱۰۰ مگابایت است.");
+    // 120 MB rather than 100: at 100 the first OOM came after about six RSS samples, too few for a trend.
+    await startTarget(core, { ...SIM_DEFAULT_ENVS, CHAOS_LEAK: "1", CHAOS_MEM_LIMIT_MB: "120" });
+    await watchUntilCrash(core, {});
+    return reply(core, "scenario-3-leak", "نشت حافظه فعال شد؛ RSS رو به رشد است و سقف کانتینر ۱۲۰ مگابایت است.");
   },
 
   async "scenario-4-cpu"(core) {
     cancelPending(core);
     clearIncident(core);
     await startTarget(core, { ...SIM_DEFAULT_ENVS, CHAOS_CPU: "1" });
-    await Promise.all([1, 2, 3].map(() => burst(core, "/api/products", 1, 0)));
-    return reply(core, "scenario-4-cpu", "حالت پردازش سنگین فعال شد و چند درخواست پشت‌سرهم فرستاده شد.");
+    await sustainedLoad(core, "/api/products", { durationMs: 9000 });
+    return reply(core, "scenario-4-cpu", "حالت پردازش سنگین فعال شد و بار مداوم روی /api/products فرستاده شد.");
   },
 
   async "scenario-5-upstream"(core) {

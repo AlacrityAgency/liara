@@ -83,12 +83,13 @@ export function extractSignals(
   const applets = data.applets ?? [];
   const add = (s: Signal) => signals.push(s);
 
-  // 2. OOM_KILLED
+  // 2. OOM_KILLED: an applet reason, an OOM log line, or an exit event that names OOMKilled / exit code 137
   const oomApplets = applets.filter(
     (a) => a.reason?.toLowerCase().includes("oom") || a.state?.toLowerCase().includes("oom")
   );
   const oomLogs = logs.filter((l) => isOomLine(l.text));
-  if (oomApplets.length > 0 || oomLogs.length > 0) {
+  const oomEvents = (data.events ?? []).filter((e) => /oomkilled|exit code 137/i.test(`${e.type} ${e.message ?? ""}`));
+  if (oomApplets.length > 0 || oomLogs.length > 0 || oomEvents.length > 0) {
     const evIds: string[] = [];
     for (const a of oomApplets) {
       evIds.push(addEv("applet", nowTs, `Applet terminated with OOM: reason=${a.reason ?? "OOMKilled"}`, "applets"));
@@ -96,13 +97,16 @@ export function extractSignals(
     for (const l of oomLogs.slice(0, 3)) {
       evIds.push(addEv("log", l.ts, `OOM log: ${l.text.slice(0, 120)}`, l.id));
     }
+    for (const e of oomEvents.slice(0, 2)) {
+      evIds.push(addEv("event", e.ts, `Event: ${e.message || e.type}`, e.id));
+    }
     add({
       kind: "OOM_KILLED",
-      firstSeen: oomLogs[0]?.ts ?? nowTs,
+      firstSeen: oomLogs[0]?.ts ?? oomEvents[0]?.ts ?? nowTs,
       detail_fa: "کانتینر به دلیل فراتر رفتن از سقف حافظه (OOMKilled) توسط سیستم متوقف شد.",
       evidence: evIds,
-      strength: oomApplets.length > 0 ? 1 : clamp(0.7 + 0.1 * oomLogs.length),
-      data: { appletOOM: oomApplets.length, oomLogLines: oomLogs.length },
+      strength: oomApplets.length > 0 ? 1 : clamp(0.7 + 0.1 * (oomLogs.length + oomEvents.length)),
+      data: { appletOOM: oomApplets.length, oomLogLines: oomLogs.length, oomEvents: oomEvents.length },
     });
   }
 
@@ -347,9 +351,15 @@ export function extractSignals(
     });
   }
 
-  // 12. UPSTREAM_SLOW: slow probes or timeouts to external hosts, without CPU or RAM pressure as the cause
+  // 12. UPSTREAM_SLOW: slow probes or timeouts to external hosts, without CPU or RAM pressure as the cause.
+  // Slow probes alone are not upstream evidence when a resource or restart signal already explains them.
   const upstreamLogs = logs.filter((l) => isUpstreamSlowLine(l.text));
-  const slowProbes = (data.probes ?? []).filter((p) => p.ms !== null && p.ms > 4000);
+  const resourceExplains = signals.some((s) =>
+    s.kind === "MEMORY_PRESSURE" || s.kind === "OOM_KILLED" || s.kind === "CRASH_LOOP" || s.kind === "CPU_SATURATION"
+  );
+  const slowProbes = upstreamLogs.length === 0 && resourceExplains
+    ? []
+    : (data.probes ?? []).filter((p) => p.ms !== null && p.ms > 4000);
   if (upstreamLogs.length > 0 || slowProbes.length >= 2) {
     const evIds: string[] = [];
     for (const l of upstreamLogs.slice(0, 2)) {
