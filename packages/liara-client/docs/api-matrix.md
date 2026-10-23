@@ -15,7 +15,7 @@
 | `app_get` | `GET` | `/v1/projects/{name}` | `https://api.liara.ir` | OAS | L0 | جزئیات وضعیت، `scale`، `planID`، `envs`، `zeroDowntime` | پیاده‌شده (`getApp`) |
 | `app_create` | `POST` | `/v1/projects` | `https://api.liara.ir` | OAS + CLI | **L2** (هزینه) | ساخت اپ جدید با `{name, planID, platform, bundlePlanID, network, readOnlyRootFilesystem}` | پیاده‌شده (`createApp`) |
 | `app_restart` | `POST` | `/v1/projects/{name}/actions/restart` | `https://api.liara.ir` | OAS | **L2** | راه‌اندازی مجدد کانتینر | پیاده‌شده (`restartApp`) |
-| `app_scale` | `POST` | `/v1/projects/{name}/actions/scale` | `https://api.liara.ir` | OAS | روشن: L2 / خاموش (0): **L3** | تغییر تعداد نمونه (`scale: 0|1`) پیاده‌شده (`scaleApp`) |
+| `app_scale` | `POST` | `/v1/projects/{name}/actions/scale` | `https://api.liara.ir` | OAS | روشن: L2 / خاموش (0): **L3** | تغییر تعداد نمونه (`scale: 0\|1`) | پیاده‌شده (`scaleApp`) |
 | `app_resize_plan` | `POST` | `/v1/projects/{name}/resize` | `https://api.liara.ir` | OAS | **L2** (هزینه+ری‌استارت) | تغییر پلن منابع سخت‌افزاری با `{planID}` | پیاده‌شده (`resizePlan`) |
 | `app_update_envs` | `POST` | `/v1/projects/update-envs` | `https://api.liara.ir` | OAS | **L2** (ری‌استارت) | به‌روزرسانی متغیرهای محیطی با `{project, variables:[{key,value}]}` | پیاده‌شده (`updateEnvs`) |
 | `app_update_port` | `POST` | `/v1/projects/update-port` | `https://api.liara.ir` | CLI | **L2** | تغییر پورت گوش دادن اپلیکیشن (اختصاصی CLI) | پیاده‌شده (`updatePort`) |
@@ -28,11 +28,11 @@
 | `release_cancel` | `POST` | `/v2/releases/{id}/cancel` | `https://api.liara.ir` | CLI | L1 | لغو فرآیند استقرار جاری | پیاده‌شده (`cancelRelease`) |
 | `release_list` | `GET` | `/v1/projects/{name}/releases` | `https://api.liara.ir` | OAS | L0 | تاریخچه نسخه‌ها با وضعیت (`READY`, `FAILED`, `UNHEALTHY`) | پیاده‌شده (`listReleases`) |
 | `release_rollback` | `POST` | `/v2/projects/{name}/releases` | `https://api.liara.ir` | ترکیبی | **L2** | استقرار مجدد با `imageName` آخرین نسخه سالم قبلی | پیاده‌نشده به‌صورت ابزار جدا؛ با `createRelease` قابل اجراست (محدودیت ۶) |
-| `logs_get` | `GET` | `/v1/projects/{name}/logs?since=` | `https://api.liara.ir` | OAS | L0 | دریافت لاگ‌ها از زمان `since` (ثانیه‌ی یونیکس، الزامی؛ پیش‌فرض ۳۰ دقیقه‌ی اخیر). CLI از مسیر `v2` با `start` استفاده می‌کند؛ مسیر `v1` مطابق OAS است و در تست زنده باید تأیید شود | | پیاده‌شده (`getLogs`، `since` الزامی) |
+| `logs_get` | `GET` | `/v1/projects/{name}/logs?since=` | `https://api.liara.ir` | OAS | L0 | دریافت لاگ‌ها از زمان `since` (ثانیه‌ی یونیکس، الزامی؛ پیش‌فرض ۳۰ دقیقه‌ی اخیر). CLI از مسیر `v2` با `start` استفاده می‌کند؛ مسیر `v1` مطابق OAS است و باید در تست زنده تأیید شود | پیاده‌شده (`getLogs`) |
 | `events_get` | `GET` | `/v1/projects/{name}/events` | `https://api.liara.ir` | OAS | L0 | رویدادهای سیستمی و کانتینری در بازه زمانی | پیاده‌شده (`getEvents`) |
 | `applets_get` | `GET` | `/v1/projects/{name}/applets` | `https://api.liara.ir` | OAS | L0 | وضعیت کانتینرها، تعداد ری‌استارت و دلیل خطا (`reason`) | پیاده‌شده (`getApplets`) |
 | `metrics_summary` | `GET` | `/v1/projects/{name}/metrics/summary` | `https://api.liara.ir` | OAS | L0 | خلاصه مصرف پردازنده، حافظه و دیسک نسبت به سقف پلن | پیاده‌شده (`getMetricsSummary`) |
-| `metrics_series` | `GET` | `/v1/projects/{name}/metrics/{cpu\|memory\|network-receive\|network-transmit}?since=` | `https://api.liara.ir` | OAS | L0 | سری زمانی مصرف منابع به تفکیک کانتینرها پیاده‌شده (`getMetricsSeries`) |
+| `metrics_series` | `GET` | `/v1/projects/{name}/metrics/{cpu\|memory\|network-receive\|network-transmit}?since=` | `https://api.liara.ir` | OAS | L0 | سری زمانی مصرف منابع به تفکیک کانتینرها | پیاده‌شده (`getMetricsSeries`) |
 | `disks_list` | `GET` | `/v1/projects/{id}/disks` | `https://api.liara.ir` | OAS | L0 | فهرست دیسک‌های متصل و فضای مصرفی | پیاده‌نشده |
 | `domain_list` | `GET` | `/v1/domains?project=` | `https://api.liara.ir` | OAS | L0 | فهرست دامنه‌های یک اپ (پارامتر `project` در OAS الزامی است) | پیاده‌شده (`listDomains(project)`) |
 | `domain_add` | `POST` | `/v1/domains` | `https://api.liara.ir` | OAS | L1 | اتصال دامنه جدید با `{name, project, type: "PROJECT"}` | پیاده‌شده (`addDomain`) |
@@ -44,7 +44,7 @@
 | `dns_zone_check_ns` | `PUT` | `/api/v1/zones/{zone}/check` | `https://dns-service.liara.ir` | OAS | L0 | بررسی وضعیت انتشار NameServerها (از جمله برای ایرنیک) | پیاده‌شده (`checkZone`) |
 | `dns_record_upsert` | `POST/PUT` | `/api/v1/zones/{zone}/dns-records[/{id}]`| `https://dns-service.liara.ir` | OAS | **L2** | ایجاد یا ویرایش رکوردهای DNS | پیاده‌شده (`upsertRecord`، `listRecords`، `getZone`) |
 | `db_list` / `db_get` | `GET` | `/v1/databases[/{id}]` | `https://api.liara.ir` | OAS | L0 | وضعیت سرویس‌های دیتابیس | پیاده‌شده (`getDatabases`، `getDatabase`) |
-| `db_metrics` | `GET` | `/v1/databases/{id}/metrics/{summary\|cpu\|memory}` | `https://api.liara.ir` | OAS | L0 | بررسی بار پردازشی و مصرف رم پایگاه‌داده پیاده‌نشده |
+| `db_metrics` | `GET` | `/v1/databases/{id}/metrics/{summary\|cpu\|memory}` | `https://api.liara.ir` | OAS | L0 | بررسی بار پردازشی و مصرف رم پایگاه‌داده | پیاده‌نشده |
 | `db_backup_create` | `POST` | `/v1/databases/{id}/backups` | `https://api.liara.ir` | OAS | L1 | پشتیبان‌گیری فوری از دیتابیس قبل از اعمال تغییرات | پیاده‌شده (`createDbBackup`) |
 | `db_resize` | `POST` | `/v1/databases/{id}/resize` | `https://api.liara.ir` | OAS | **L2** | ارتقای پلن پایگاه‌داده | پیاده‌نشده |
 | `git_integrations_get` | `GET` | `/v1/me/git-integrations` | `https://api.liara.ir` | OAS | L0 | وضعیت اتصال Git (فقط خواندنی) | پیاده‌شده (`getGitIntegrations`) |

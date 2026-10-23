@@ -16,6 +16,9 @@ const {
   DEFAULT_RETRY_DELAYS_MS,
 } = require("../build/liara-client/src/index.js");
 
+// Keep exact-URL assertions independent of the developer's shell.
+delete process.env.LIARA_TEAM_ID;
+
 const API = "https://api.liara.ir";
 const DNS = "https://dns-service.liara.ir";
 const TOKEN = "test-token";
