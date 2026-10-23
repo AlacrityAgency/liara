@@ -55,13 +55,16 @@ export interface ProjectProfile {
 
 export interface PlanOption {
   planId: string;
+  planID?: string;
   name: string;
+  name_fa?: string;
   cpuCores: number;
   ramMB: number;
   diskGB: number;
   monthlyPriceTomans: number;
   hourlyPriceTomans: number;
   tier: "economic" | "recommended" | "scalable";
+  isRecommended?: boolean;
   rationale_fa: string;
 }
 

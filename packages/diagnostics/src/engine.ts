@@ -1,10 +1,16 @@
-import type { Incident, Hypothesis, FixBrief, Snapshot } from "@sokan/contracts";
+import type { Incident, Hypothesis, FixBrief, Snapshot, PostmortemReport, BuildLogTriageResult, PredictiveShieldResult, ChaosVaccinationResult, HibernationPlan } from "@sokan/contracts";
 import type { CollectedEvidence } from "./types";
 import { extractSignals } from "./extractors";
 import { flagInstructions } from "./flags";
 import { STANDARD_RUNBOOKS } from "./runbooks";
 import { clusterErrors } from "./logparse";
 import { percentile } from "./stats";
+import { correlateChanges } from "./correlation";
+import { generatePostmortem } from "./postmortem";
+import { triageBuildLogs } from "./build-triage";
+import { evaluatePredictiveShield } from "./predictive";
+import { runChaosVaccination } from "./chaos-vaccine";
+import { evaluateHibernation } from "./hibernation";
 
 export class DiagnosticEngine {
   /**
@@ -100,6 +106,12 @@ export class DiagnosticEngine {
     }
 
     const incidentId = `inc_${Date.now().toString(36)}`;
+    const changeCorrelation = correlateChanges(evidenceData, signals);
+
+    let predictiveShield: PredictiveShieldResult | undefined;
+    if (evidenceData.memory && evidenceData.memory.length > 0 && evidenceData.app?.memoryLimitMB) {
+      predictiveShield = evaluatePredictiveShield(evidenceData.memory, evidenceData.app.memoryLimitMB);
+    }
 
     return {
       id: incidentId,
@@ -114,6 +126,8 @@ export class DiagnosticEngine {
       hypotheses,
       rejected,
       actions: [],
+      changeCorrelation,
+      predictiveShield,
       status: hypotheses.length > 0 ? "awaiting_approval" : "investigating",
     };
   }
@@ -210,5 +224,40 @@ export class DiagnosticEngine {
       suggested_change,
       verification: "پاسخ موفق ۲۰۰ در تست پروب و عدم وجود استثنا در ۶۰ ثانیه اول پس از دیپلوی",
     };
+  }
+
+  public static generatePostmortem(
+    incident: Incident,
+    auditLog?: Array<{ tool: string; executedAt: string; success: boolean; detail?: string }>
+  ): PostmortemReport {
+    return generatePostmortem(incident, auditLog);
+  }
+
+  public static triageBuildLogs(logText: string): BuildLogTriageResult {
+    return triageBuildLogs(logText);
+  }
+
+  public static evaluatePredictiveShield(
+    memoryPoints: Array<{ ts: string; mb: number }>,
+    memoryLimitMB: number
+  ): PredictiveShieldResult {
+    return evaluatePredictiveShield(memoryPoints, memoryLimitMB);
+  }
+
+  public static runChaosVaccination(
+    appName: string,
+    healthProbes?: Array<{ status: number | null; ms: number | null; ok: boolean }>,
+    dbReachable?: boolean
+  ): ChaosVaccinationResult {
+    return runChaosVaccination(appName, healthProbes, dbReachable);
+  }
+
+  public static evaluateHibernation(
+    appName: string,
+    lastActivityMinutes?: number,
+    currentMonthlyTomans?: number,
+    isProduction?: boolean
+  ): HibernationPlan {
+    return evaluateHibernation(appName, lastActivityMinutes, currentMonthlyTomans, isProduction);
   }
 }

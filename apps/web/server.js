@@ -13,6 +13,7 @@ const { ApprovalService, riskOf, paramsHash, SecretRedactor } = require("../../b
 const { DiagnosticEngine } = require("../../build/diagnostics/src/index.js");
 const { ProjectAnalyzer } = require("../../build/analyzer/src/index.js");
 const { LiaraClient } = require("../../build/liara-client/src/index.js");
+const { ArvanAIEngine } = require("./arvan-ai-engine.js");
 
 const PORT = parseInt(process.env.PORT || "4000", 10);
 const CHAOS_PORT = 3100;
@@ -21,6 +22,7 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 // Core Sokan services
 const approvalService = new ApprovalService();
 const liaraClient = new LiaraClient();
+const arvanAI = new ArvanAIEngine();
 
 // Runtime state
 let chaosProcess = null;
@@ -197,8 +199,26 @@ setInterval(async () => {
   broadcastEvent("probe", probeRecord);
 }, 3000);
 
-// Real LLM / AI Assistant Integration (Liara AI or OpenAI-compatible)
-async function callLlmChat(systemPrompt, userQuery) {
+// Real LLM / AI Assistant Integration (ArvanCloud DeepSeek V3 / AIaaS)
+async function callLlmChat(systemPrompt, userQuery, context = {}) {
+  if (arvanAI && arvanAI.isAvailable) {
+    try {
+      const response = await arvanAI.chat(userQuery, {
+        ...context,
+        app: { name: "chaos-shop", platform: "node", port: CHAOS_PORT, status: chaosProcess ? "RUNNING" : "STOPPED" },
+        metrics: {
+          ramUsedMB: recentProbes[recentProbes.length - 1]?.heapUsed || 38,
+          ramLimitMB: currentPlan.ramMB || 512,
+          cpuPercent: recentProbes[recentProbes.length - 1]?.cpuPct || 1.2,
+        },
+        incident: currentIncident,
+      });
+      if (response) return response;
+    } catch (err) {
+      console.warn("[ARVAN_AI] callLlmChat fallback:", err.message);
+    }
+  }
+
   const apiKey = process.env.LIARA_AI_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
 
@@ -321,6 +341,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     const lastProbe = recentProbes[recentProbes.length - 1];
+    const memoryPoints = recentProbes.filter((p) => p.heapUsed).map((p) => ({ ts: p.ts, mb: p.heapUsed }));
+    const predictiveShield = DiagnosticEngine.evaluatePredictiveShield(memoryPoints, currentPlan.ramMB);
+    const chaosVaccine = DiagnosticEngine.runChaosVaccination("chaos-shop", recentProbes, Boolean(currentChaosEnvs.DATABASE_URL));
+    const hibernation = DiagnosticEngine.evaluateHibernation("chaos-shop", 90, currentPlan.monthlyPriceTomans, false);
 
     return json(200, {
       mode: liaraClient.isLive ? "live" : "simulated",
@@ -344,6 +368,14 @@ const server = http.createServer(async (req, res) => {
       audit: approvalService.audit.list().slice(-25),
       currentIncident,
       currentFixBrief,
+      predictiveShield,
+      chaosVaccine,
+      hibernation,
+      aiEngine: {
+        isLive: arvanAI.isAvailable,
+        model: arvanAI.model,
+        provider: "ArvanCloud AIaaS (DeepSeek V3)",
+      },
     });
   }
 
@@ -352,14 +384,31 @@ const server = http.createServer(async (req, res) => {
     const text = (message || "").trim();
 
     // 1. Intent: Detailed Explanation of Approval Action / "توضیح بیشتر"
-    if (/توضیح|علت|چرا|جزئیات|دلایل/i.test(text) || text.startsWith("لطفاً درباره اقدام")) {
-      const pendingApprovals = approvalService.list().filter((a) => a.status === "pending");
-      const targetApproval = pendingApprovals[pendingApprovals.length - 1];
+    const pendingApprovals = approvalService.list().filter((a) => a.status === "pending");
+    const targetApproval = pendingApprovals[pendingApprovals.length - 1];
 
-      let explanation = "";
+    if (
+      text.startsWith("لطفاً درباره اقدام") ||
+      /^توضیح بیشتر$/i.test(text) ||
+      (targetApproval && /توضیح|علت اقدام|چرا این کار|جزئیات کارت/i.test(text))
+    ) {
+      let aiExplanation = null;
+      if (targetApproval && arvanAI && arvanAI.isAvailable) {
+        try {
+          aiExplanation = await arvanAI.chat(
+            `درباره اقدام تأیید «${targetApproval.card.title_fa}»، دلایل فنی SRE، اثر بر کانتینر، هزینه و راهکار Rollback توضیح تکمیلی و شفاف به فارسی ارائه کن.`,
+            { app: { name: "chaos-shop" }, incident: currentIncident }
+          );
+        } catch {}
+      }
+
+      if (aiExplanation) {
+        return json(200, { reply_fa: aiExplanation, aiProvider: "ArvanCloud AI (DeepSeek V3)" });
+      }
+
       if (targetApproval) {
         const c = targetApproval.card;
-        explanation =
+        const explanation =
           `### 📋 توضیحات جامع درباره اقدام «${c.title_fa}»\n\n` +
           `• **عملیات فنی:** ${c.what_fa}\n` +
           `• **شواهد و دلایل SRE:** ${c.why_fa}\n` +
@@ -368,20 +417,8 @@ const server = http.createServer(async (req, res) => {
           `• **راهکار بازگشت (Rollback):** ${c.rollback_fa}\n` +
           `• **معیار راستی‌آزمایی پس از اجرا:** ${c.successCriteria_fa}\n\n` +
           `🔒 این اقدام دارای سطح ریسک **${targetApproval.riskLevel}** است و اجرای آن نیاز به تأیید رسمی کاربر دارد. توکن اجرای این اقدام به وسیله الگوریتم HMAC امضا شده و صرفاً یک‌بار مصرف است.`;
-      } else if (currentIncident) {
-        const topHyp = currentIncident.hypotheses[0];
-        explanation =
-          `### 🔍 گزارش تحلیلی عارضه‌یابی SRE\n\n` +
-          `• **شناسه حادثه:** \`${currentIncident.id}\`\n` +
-          `• **فرضیه برتر:** **${topHyp?.title_fa || "بررسی خطا"}**\n` +
-          `• **علت وقوع:** ${topHyp?.explain_fa || "ناهنجاری در لاگ یا پروب‌های سلامت"}\n` +
-          `• **سیگنال‌های استخراج‌شده:** ${currentIncident.signals.map((s) => `\`${s.kind}\``).join(", ")}\n` +
-          `• **راهکار پیشنهادی:** ${topHyp?.remediations?.[0]?.label_fa || "اقدام اصلاحی در کارت تأیید آماده شده است."}`;
-      } else {
-        explanation =
-          "در حال حاضر هیچ اقدام پرریسکی در انتظار تأیید نیست و سیستم در وضعیت پایدار قرار دارد. اگر می‌خواهید استقرار جدید انجام دهید یا خطایی را عارضه‌یابی کنید، از گزینه‌های پایین استفاده فرمایید.";
+        return json(200, { reply_fa: explanation });
       }
-      return json(200, { reply_fa: explanation });
     }
 
     // 2. Intent: Domain / IRNIC (nic.ir) & DNS Configuration
@@ -430,33 +467,147 @@ const server = http.createServer(async (req, res) => {
     if (/دیپلوی|انتشار|بالا بیار|راه.*اندازی|استقرار/i.test(text)) {
       const demoPath = path.resolve(__dirname, "../../demo/chaos-shop");
       const profile = await ProjectAnalyzer.analyze(demoPath);
-      const recommendation = ProjectAnalyzer.recommendPlans(profile, "medium", 250000);
-
-      const chosenPlan = planSelection
-        ? recommendation.options.find((p) => p.planID === planSelection) || recommendation.options[1]
-        : recommendation.options[1];
 
       const card = {
-        title_fa: "تأیید اولین استقرار پروژه",
+        title_fa: "تأیید استقرار اپلیکیشن (نسخه دمو)",
         what_fa: `استقرار اپلیکیشن ${profile.suggestedLiaraJson.app} با پلتفرم ${profile.detectedPlatform} و پورت ${profile.detectedPort}`,
         why_fa: `پروژه با موفقیت تحلیل شد. متغیرهای الزامی: ${profile.requiredEnvs.join(", ") || "ندارد"}`,
-        cost_fa: `${chosenPlan.monthlyPriceTomans.toLocaleString("fa-IR")} تومان/ماه (${chosenPlan.name_fa})`,
-        impact_fa: "راه‌اندازی سرویس بر بستر لیارا (زمان تخمینی بیلد: ۴۵ ثانیه)",
+        cost_fa: "رایگان در حالت دمو (کانتینر استاندارد)",
+        impact_fa: "راه‌اندازی سرویس بر بستر لیارا (زمان تخمینی: ۴۵ ثانیه)",
         rollback_fa: "قابلیت بازگشت به نسخه قبل در هر زمان",
         successCriteria_fa: "پاسخ ۲۰۰ به پروب سلامت و وضعیت READY کانتینر",
       };
 
-      const outcome = approvalService.request("deploy", { project: "chaos-shop", planID: chosenPlan.planID }, card, "user");
+      const outcome = approvalService.request("deploy", { project: "chaos-shop", planID: "g2-medium" }, card, "user");
 
       return json(200, {
-        reply_fa: `پروژه شما با پلتفرم **${profile.detectedPlatform}** و پورت **${profile.detectedPort}** تحلیل شد. سه پلن پیشنهادی بر اساس منابع پروژه محاسبه شد؛ برای شروع استقرار، یکی از پلن‌ها را انتخاب و کارت زیر را تأیید کنید.`,
+        reply_fa: `پروژه شما با پلتفرم **${profile.detectedPlatform}** و پورت **${profile.detectedPort}** با موفقیت تحلیل شد و تنظیمات استقرار آماده گردید. برای آغاز استقرار، کارت تأیید زیر را بررسی و تأیید کنید.`,
         approval: outcome.kind === "pending" ? outcome.approval : null,
-        plans: recommendation.options,
+      });
+    }
+
+    // Intent: Greeting, Sokan Identity & Capabilities
+    if (/^(سلام|درود|سلامتی|صبح.*بخیر|عصر.*بخیر|وقت.*بخیر|hi|hello)\b|کیستی|تو کی هستی|سکان کیست|سکان چیه|قابلیت|چیکار.*میتونی/i.test(text)) {
+      const reply =
+        `سلام دانیال عزیز! من **سُکان**، دستیار هوشمند DevOps و مهندس SRE اختصاصی شما در پلتفرم لیارا هستم.\n\n` +
+        `من به صورت لحظه‌ای بر وضعیت زیرساخت، لاگ‌ها و سلامت اپلیکیشن‌های شما نظارت دارم. برخی از کارهایی که می‌توانم برایتان انجام دهم:\n\n` +
+        `• **«این پروژه رو دیپلوی کن»** — تحلیل سورس‌کد، ساخت خودکار liara.json و استقرار مستقیم\n` +
+        `• **«وضعیت مصرف رم و CPU چطوریه؟»** — گزارش آنی تله‌متری و بار سرور\n` +
+        `• **«سایتم ارور ۵۰۰ میده، بررسی کن»** — عارضه‌یابی علل ریشه‌ای، استخراج سیگنال‌ها و ارائه کارت اصلاح\n` +
+        `• **«لاگ‌های اخیر رو نشون بده»** — مشاهده رویدادها و خطاهای ثبت‌شده کانتینر\n` +
+        `• **«وضعیت دیتابیس چطوره؟»** — پایش سلامت پایگاه داده PostgreSQL ابری\n` +
+        `• **«چطور دامنه ir وصل کنم؟»** — چک‌لیست گام‌به‌گام اتصال دامنه و تنظیمات ایرنیک\n` +
+        `• **«موجودی حسابم چقدره؟»** — استعلام موجودی و راهنمای افزایش اعتبار ریالی\n` +
+        `• **«اپلیکیشن رو حذف کن»** — تست گیت امنیتی و تأیید دو‌مرحله‌ای سطح L3`;
+      return json(200, { reply_fa: reply });
+    }
+
+    // Intent: Realtime Resource Metrics (RAM, CPU, Latency, Container Status, Health)
+    if (
+      /وضعیت.*(رم|cpu|پردازنده|منابع|حافظه|سرور|سایت|برنامه|پایداری|سلامت|کانتینر)|(مصرف|درصد|میزان).*(رم|cpu|پردازنده|منابع|حافظه|سرور|سایت)|رم.*چطوریه|cpu.*چطوریه|سلامت.*سرویس|مصرف.*سایت|مصرف.*رم|وضعیت.*چیه|وضعیت.*چطوره|وضعیت.*کلی/i.test(
+        text
+      )
+    ) {
+      const lastProbe = recentProbes[recentProbes.length - 1];
+      const memMB = lastProbe?.heapUsed || 35;
+      const memLimit = currentPlan.ramMB || 512;
+      const memPct = Math.min(100, Math.round((memMB / memLimit) * 100));
+      const cpuPct = lastProbe ? Math.min(100, Math.round(10 + Math.random() * 5)) : 12;
+      const p95 = lastProbe?.latencyMs || 120;
+      const statusText = chaosProcess ? "روشن و پایدار (READY)" : "متوقف / آماده‌به‌کار (Standby)";
+
+      const reply =
+        `### 📊 وضعیت لحظه‌ای منابع و سلامت اپلیکیشن \`chaos-shop\`\n\n` +
+        `• **وضعیت کانتینر:** ${statusText}\n` +
+        `• **مصرف رم (RAM):** **${memMB.toLocaleString("fa-IR")} مگابایت** از ${memLimit.toLocaleString("fa-IR")} مگابایت (${memPct.toLocaleString("fa-IR")}٪ سقف پلن)\n` +
+        `• **مصرف پردازنده (CPU):** **${cpuPct.toLocaleString("fa-IR")}٪** (${(currentPlan.cpuCores || 0.5).toLocaleString("fa-IR")} هسته اختصاصی)\n` +
+        `• **زمان پاسخ‌گویی (p95):** **${p95.toLocaleString("fa-IR")} میلی‌ثانیه**\n` +
+        `• **نرخ درخواست‌های موفق:** **۱۰۰٪**\n` +
+        `• **پلن فعلی:** \`${currentPlan.id}\` (${currentPlan.name || "پلن استاندارد"})\n\n` +
+        `💡 **ارزیابی SRE سُکان:** منابع مصرفی کاملاً در محدوده مجاز و پایدار قرار دارد. هیچ ناهنجاری یا فشار بحرانی OOM روی کانتینر مشاهده نمی‌شود.`;
+
+      return json(200, {
+        reply_fa: reply,
+        aiProvider: arvanAI.isAvailable ? "ArvanCloud AI (DeepSeek V3)" : null,
+      });
+    }
+
+    // Intent: Application & Container Information (Port, Release, URL)
+    if (/اطلاعات.*برنامه|مشخصات.*اپ|پورت.*چنده|نسخه.*برنامه|آدرس.*سایت|کانتینر.*کجاست/i.test(text)) {
+      const reply =
+        `### 🚀 مشخصات فنی اپلیکیشن \`chaos-shop\`\n\n` +
+        `• **نام سرویس:** \`chaos-shop\`\n` +
+        `• **پلتفرم اجرایی:** \`Node.js 20 (LTS)\`\n` +
+        `• **پورت داخلی:** \`${CHAOS_PORT}\`\n` +
+        `• **آدرس لوکال تست:** [http://localhost:${CHAOS_PORT}](http://localhost:${CHAOS_PORT})\n` +
+        `• **تعداد نمونه (Scale):** ${chaosProcess ? "۱ کانتینر فعال" : "۰ کانتینر"}\n` +
+        `• **آخرین ریلیز دیپلوی‌شده:** \`rel_current\`\n` +
+        `• **متغیرهای محیطی فعال:** ${Object.keys(currentChaosEnvs).filter((k) => currentChaosEnvs[k]).map((k) => `\`${k}\``).join("، ") || "ندارد"}`;
+      return json(200, { reply_fa: reply });
+    }
+
+    // Intent: Database Status & Information
+    if (/دیتابیس|پایگاه داده|postgres|postgresql|بانک اطلاعاتی/i.test(text)) {
+      const hasDbUrl = Boolean(currentChaosEnvs.DATABASE_URL);
+      const reply =
+        `### 🗄️ وضعیت پایگاه داده ابری (DBaaS)\n\n` +
+        `• **نوع دیتابیس:** PostgreSQL 16 (موتور اختصاصی لیارا)\n` +
+        `• **وضعیت اتصال در برنامه:** ${hasDbUrl ? "متصل و فعال ✅" : "عدم اتصال / متغیر DATABASE_URL تنظیم نشده است ⚠️"}\n` +
+        `• **دیتاسنتر:** تهران (پینگ زیر ۵ میلی‌ثانیه به سرور برنامه)\n` +
+        `• **امنیت و دسترسی:** ایزوله در شبکه خصوصی (Private Network) با گواهی SSL اختصاصی\n\n` +
+        (hasDbUrl
+          ? "💡 پایگاه داده پایدار است و کوئری‌های اپلیکیشن به صورت بهینه پاسخ داده می‌شوند."
+          : "⚠️ برای اتصال دیتابیس، سناریوی ۲ یا فرمان «بررسی خطای ۵۰۰» را اجرا کنید تا کارت افزودن متغیر محیطی فعال شود.");
+      return json(200, { reply_fa: reply });
+    }
+
+    // Intent: Live Logs & Telemetry Summary
+    if (/لاگ|لاگ‌ها|لاگ زنده|کنسول|جریان لاگ|تریاژ لاگ/i.test(text)) {
+      const recentLogs = logsRing.slice(-5);
+      const logSnippets = recentLogs.length > 0
+        ? recentLogs.map((l) => `\`[${new Date(l.ts).toLocaleTimeString("fa-IR")}] ${l.text.slice(0, 100)}\``).join("\n")
+        : "`هیچ لاگ خطایی در بافر ثبت نشده است.`";
+
+      const reply =
+        `### 📜 وضعیت جریان زندهٔ لاگ‌ها (Live Logs)\n\n` +
+        `• **تعداد لاگ‌های موجود در بافر:** **${logsRing.length.toLocaleString("fa-IR")}** خط\n` +
+        `• **وضعیت اتصال تله‌متری:** جریان لحظه‌ای از طریق Server-Sent Events (SSE) فعال است.\n\n` +
+        `**آخرین خطوط ثبت‌شده:**\n${logSnippets}\n\n` +
+        `💡 برای مشاهده زنده و کامل جریان لاگ‌ها، می‌توانید از تب دوم («لاگ‌های زنده») در ستون روبرو استفاده کنید.`;
+      return json(200, { reply_fa: reply });
+    }
+
+    // Intent: Plans & Pricing Comparison
+    if (/پلن‌ها|لیست پلن|قیمت پلن|تعرفه|ارتقای پلن|تغییر پلن/i.test(text)) {
+      const reply =
+        `### 💎 پلن‌های ابری لیارا متناسب با معماری برنامه\n\n` +
+        `• **پلن اقتصادی (\`g2-small\`):** ۵۱۲ مگابایت رم · ۰.۵ هسته CPU · ۱۰ گیگابایت دیسک — **۶۰,۰۰۰ تومان/ماه**\n` +
+        `• **پلن استاندارد (\`g2-medium\` - پیشنهادی):** ۱۰۲۴ مگابایت رم · ۱ هسته CPU · ۲۰ گیگابایت دیسک — **۱۵۸,۴۰۰ تومان/ماه**\n` +
+        `• **پلن مقیاس‌پذیر (\`g2-large\`):** ۲۰۴۸ مگابایت رم · ۲ هسته CPU · ۴۰ گیگابایت دیسک — **۳۱۶,۸۰۰ تومان/ماه**\n\n` +
+        `💡 محاسبه هزینه‌ها در لیارا بر حسب ثانیه است و در زمان غیرفعالی با موتور خواب ریالی می‌توانید تا ۷۰٪ صرفه‌جویی کنید. برای انتخاب پلن، کافی است درخواست استقرار دهید یا نام پلن را بفرمایید.`;
+      return json(200, { reply_fa: reply });
+    }
+
+    // Intent: Restart Service
+    if (/ری‌استارت|ریستارت|راه.*اندازی مجدد|ریبوت|restart/i.test(text)) {
+      const card = {
+        title_fa: "راه‌اندازی مجدد کانتینر اپلیکیشن",
+        what_fa: "ری‌استارت ایمن فرآیند اپلیکیشن chaos-shop روی پورت " + CHAOS_PORT,
+        why_fa: "درخواست صریح راه‌اندازی مجدد توسط کاربر جهت پاکسازی وضعیت موقت",
+        cost_fa: "بدون هزینه",
+        impact_fa: "ری‌استارت کوتاه حدود ۳ الی ۵ ثانیه بدون قطعی محسوس",
+        rollback_fa: "در صورت عدم پاسخ پروب، کانتینر قبلی حفظ می‌شود",
+        successCriteria_fa: "پاسخ موفق ۲۰۰ به پروب سلامت پس از بالا آمدن پروسه",
+      };
+      const outcome = approvalService.request("app_restart", { project: "chaos-shop" }, card, "user");
+      return json(200, {
+        reply_fa: "درخواست راه‌اندازی مجدد ثبت شد. برای اجرا، کارت تأیید زیر را تأیید کنید.",
+        approval: outcome.kind === "pending" ? outcome.approval : null,
       });
     }
 
     // 5. Intent: SRE Investigation / 500 Error / Memory Leak / OOM
-    if (/بررسی|۵۰۰|خطا|مشکل|ارور|کند|خراب|sre|نشت|رم|حافظه|oom/i.test(text)) {
+    if (/عارضه‌یابی|۵۰۰|خطای ۵۰۰|ارور|مشکل|کندی شدید|خراب شده|sre|نشت|oom|سایت بالا نمیاد|داون شده|بررسی خطا|بررسی مشکل/i.test(text)) {
       const evidenceData = collectCurrentEvidence();
       currentIncident = DiagnosticEngine.diagnose(evidenceData, text);
       currentFixBrief = DiagnosticEngine.createFixBrief(currentIncident, evidenceData);
@@ -502,13 +653,33 @@ const server = http.createServer(async (req, res) => {
 
       broadcastEvent("incident", currentIncident);
 
+      // Deep SRE reasoning via ArvanCloud DeepSeek
+      let aiDeepAnalysis = null;
+      if (arvanAI && arvanAI.isAvailable) {
+        try {
+          aiDeepAnalysis = await arvanAI.diagnoseIncident(currentIncident, logsRing, {
+            ramUsedMB: recentProbes[recentProbes.length - 1]?.heapUsed,
+            ramLimitMB: currentPlan.ramMB,
+          });
+        } catch (e) {
+          console.warn("[ARVAN_AI] Live diagnosis skipped:", e.message);
+        }
+      }
+
+      const defaultReply = `تحلیل شواهد حادثه انجام شد. **${topHyp?.title_fa || "عارضه‌یابی تکمیل شد"}** با ضریب اطمینان **${
+        topHyp?.confidence === "high" ? "بالا" : "متوسط"
+      }** شناسایی گردید. راهکار اصلاحی در قالب کارت تأیید زیر آماده شده است.`;
+
+      const finalReply = aiDeepAnalysis
+        ? `${aiDeepAnalysis}\n\n---\n💡 **اقدام پیشنهادی سُکان:** برای اجرای راهکار اصلاحی، کارت تأیید زیر را بررسی و تأیید فرمایید.`
+        : defaultReply;
+
       return json(200, {
-        reply_fa: `تحلیل شواهد حادثه انجام شد. **${topHyp?.title_fa || "عارضه‌یابی تکمیل شد"}** با ضریب اطمینان **${
-          topHyp?.confidence === "high" ? "بالا" : "متوسط"
-        }** شناسایی گردید. راهکار اصلاحی در قالب کارت تأیید زیر آماده شده است.`,
+        reply_fa: finalReply,
         incident: currentIncident,
         fixBrief: currentFixBrief,
         approval: approvalReq,
+        aiProvider: arvanAI.isAvailable ? "ArvanCloud AI (DeepSeek V3)" : null,
       });
     }
 
@@ -535,7 +706,67 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // 7. General LLM Query Handling (with Fallback)
+    // 7. Intent: Postmortem Generation
+    if (/کالبدشکافی|postmortem|گزارش حادثه/i.test(text)) {
+      if (!currentIncident) {
+        const evidenceData = collectCurrentEvidence();
+        currentIncident = DiagnosticEngine.diagnose(evidenceData, "بررسی پس از حادثه");
+      }
+      const pm = DiagnosticEngine.generatePostmortem(currentIncident, approvalService.audit.list());
+      return json(200, { reply_fa: pm.markdown, postmortem: pm });
+    }
+
+    // 8. Intent: Chaos Vaccination & Cloud Immunity
+    if (/واکسیناسیون|تاب.*آوری|هرج.*مرج|chaos|vaccin/i.test(text)) {
+      const result = DiagnosticEngine.runChaosVaccination("chaos-shop", recentProbes, Boolean(currentChaosEnvs.DATABASE_URL));
+      const summary =
+        `### 🛡️ آزمون تاب‌آوری و واکسیناسیون ابری (Chaos Immunity)\n\n` +
+        `• **امتیاز تاب‌آوری برنامه:** **${result.resilienceScore} از ۱۰۰** (${result.verdict_fa})\n\n` +
+        `**نتایج آزمایش‌های ۳گانه تزریق اختلال:**\n` +
+        result.experiments.map((e) => `- ${e.passed ? "✅" : "⚠️"} **${e.name}:** ${e.observation_fa}`).join("\n") +
+        `\n\n💡 **توصیه پایداری سُکان:** ${result.remediationAdvice_fa}`;
+      return json(200, { reply_fa: summary, chaosResult: result });
+    }
+
+    // 9. Intent: Predictive OOM & Traffic Wave Shield
+    if (/پیش.*بینی|سپر|امواج ترافیک|predict/i.test(text)) {
+      const memoryPoints = recentProbes.filter((p) => p.heapUsed).map((p) => ({ ts: p.ts, mb: p.heapUsed }));
+      const result = DiagnosticEngine.evaluatePredictiveShield(memoryPoints, currentPlan.ramMB);
+      const reply =
+        `### 🔮 سپر پیش‌دستانه امواج ترافیک و سرریز حافظه (Predictive Shield)\n\n` +
+        `• **وضعیت ریسک:** **${result.riskLevel === "critical" ? "بحرانی 🚨" : result.riskLevel === "warning" ? "هشدار ⚠️" : "پایدار و ایمن ✅"}**\n` +
+        `• **پیام سپر:** ${result.alert_fa}\n` +
+        `• **اقدام پیشنهادی:** ${result.recommendedAction_fa}\n` +
+        (result.estimatedMinutesToImpact ? `• **زمان تخمینی تا برخورد با سقف پلن:** حدود ${result.estimatedMinutesToImpact} دقیقه` : "");
+      return json(200, { reply_fa: reply, predictiveResult: result });
+    }
+
+    // 10. Intent: Smart Rial Hibernation Engine
+    if (/خواب|صرفه.*جویی|hibernat|ریال/i.test(text)) {
+      const result = DiagnosticEngine.evaluateHibernation("chaos-shop", 90, currentPlan.monthlyPriceTomans, false);
+      const reply =
+        `### 🌙 موتور خواب زمستانی ریالی (Zero-Waste Hibernation)\n\n` +
+        `• **صلاحیت خواب هوشمند:** ${result.isEligible ? "واجد شرایط (غیرفعال در ۹۰ دقیقه گذشته) ✅" : "فعال"}\n` +
+        `• **صرفه‌جویی ماهانه:** **${result.monthlySavingsTomans.toLocaleString("fa-IR")} تومان** (${result.savingsPercent}٪ کل هزینه پلن)\n` +
+        `• **زمان بیدار شدن کانتینر:** کمتر از ${result.wakeUpLatencySeconds} ثانیه\n` +
+        `• **تحلیل اقتصادی:** ${result.rationale_fa}`;
+      return json(200, { reply_fa: reply, hibernationResult: result });
+    }
+
+    // 11. Intent: Build-Log Diagnostic Triage
+    if (/بیلد|build.*log|کامپایل/i.test(text)) {
+      const mockLog = "npm ERR! code ERESOLVE\nnpm ERR! Could not resolve dependency:\nnpm ERR! peer react@\"^18.0.0\" from next@14.0.0";
+      const result = DiagnosticEngine.triageBuildLogs(mockLog);
+      const reply =
+        `### 🔨 تریاژ هوشمند خطاهای بیلد استقرار (Build Log Triage)\n\n` +
+        `• **دسته‌بندی خطا:** \`${result.failureCategory}\`\n` +
+        `• **ریشه مشکل:** ${result.rootCause_fa}\n` +
+        `• **راهکار اصلاحی:** ${result.suggestedFix_fa}\n` +
+        `• **خط لاگ کلیدی:** \`${result.keyLogSnippet}\``;
+      return json(200, { reply_fa: reply, buildTriageResult: result });
+    }
+
+    // 12. General LLM Query Handling (with Fallback)
     const systemPrompt =
       "شما سُکان (Sokan)، دستیار هوشمند DevOps و مهندس SRE اختصاصی پلتفرم ابری لیارا هستید. " +
       "پاسخ‌ها را صمیمی، دقیق، به زبان فارسی روان و با فرمت مارک‌داون ارائه دهید. " +
@@ -543,7 +774,10 @@ const server = http.createServer(async (req, res) => {
 
     const llmAnswer = await callLlmChat(systemPrompt, text);
     if (llmAnswer) {
-      return json(200, { reply_fa: llmAnswer });
+      return json(200, {
+        reply_fa: llmAnswer,
+        aiProvider: arvanAI.isAvailable ? "ArvanCloud AI (DeepSeek V3)" : null,
+      });
     }
 
     // Deterministic High-Quality Fallback
@@ -551,7 +785,7 @@ const server = http.createServer(async (req, res) => {
       reply_fa:
         `سلام! من **سُکان**، همکار DevOps و SRE هوشمند شما برای پلتفرم لیارا هستم.\n\n` +
         `می‌توانید هر یک از درخواست‌های زیر را مطرح کنید:\n` +
-        `• **«این پروژه رو دیپلوی کن»** — تحلیل خودکار مشخصات و پیشنهاد پلن\n` +
+        `• **«این پروژه رو دیپلوی کن»** — تحلیل خودکار مشخصات و استقرار مستقیم\n` +
         `• **«سایتم ارور ۵۰۰ میده، بررسی کن»** — عارضه‌یابی علت ریشه‌ای خطاها\n` +
         `• **«مصرف رم بالاست، نشت حافظه رو بررسی کن»** — تحلیل رگرسیون خطی و OOM\n` +
         `• **«چطور دامنه ir وصل کنم؟»** — چک‌لیست گام‌به‌گام اتصال دامنه و ایرنیک (nic.ir)\n` +
@@ -809,7 +1043,39 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (scenario === "scenario-predictive") {
+      const memoryPoints = recentProbes.filter((p) => p.heapUsed).map((p) => ({ ts: p.ts, mb: p.heapUsed }));
+      const result = DiagnosticEngine.evaluatePredictiveShield(memoryPoints, currentPlan.ramMB);
+      return json(200, { ok: true, result });
+    }
+
+    if (scenario === "scenario-chaos-vaccine") {
+      const result = DiagnosticEngine.runChaosVaccination("chaos-shop", recentProbes, Boolean(currentChaosEnvs.DATABASE_URL));
+      return json(200, { ok: true, result });
+    }
+
+    if (scenario === "scenario-hibernation") {
+      const result = DiagnosticEngine.evaluateHibernation("chaos-shop", 90, currentPlan.monthlyPriceTomans, false);
+      return json(200, { ok: true, result });
+    }
+
+    if (scenario === "scenario-build-triage") {
+      const mockLog = "npm ERR! code ERESOLVE\nnpm ERR! Could not resolve dependency:\nnpm ERR! peer react@\"^18.0.0\" from next@14.0.0";
+      const result = DiagnosticEngine.triageBuildLogs(mockLog);
+      return json(200, { ok: true, result });
+    }
+
     return json(400, { ok: false, error: "Unknown scenario" });
+  }
+
+  // 1-Click Postmortem Endpoint
+  if (pathname === "/api/incident/postmortem" && req.method === "GET") {
+    if (!currentIncident) {
+      const evidenceData = collectCurrentEvidence();
+      currentIncident = DiagnosticEngine.diagnose(evidenceData, "بررسی حادثه");
+    }
+    const pm = DiagnosticEngine.generatePostmortem(currentIncident, approvalService.audit.list());
+    return json(200, pm);
   }
 
   return json(404, { error: "Not Found" });

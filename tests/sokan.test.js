@@ -20,6 +20,12 @@ const {
   linearRegression,
   extractSignals,
   DiagnosticEngine,
+  correlateChanges,
+  generatePostmortem,
+  triageBuildLogs,
+  evaluatePredictiveShield,
+  runChaosVaccination,
+  evaluateHibernation,
 } = require("../build/diagnostics/src/index.js");
 
 const { ProjectAnalyzer } = require("../build/analyzer/src/index.js");
@@ -461,20 +467,7 @@ describe("9. Extended Coverage: Memory Leak Runbook, Port/Domain Analyzer & Liar
       "upsertDnsRecord",
     ];
 
-    let client;
-    try {
-      client = new LiaraClient({ apiKey: "test-token" });
-    } catch {
-      try {
-        client = new LiaraClient("test-token");
-      } catch {
-        try {
-          client = new LiaraClient();
-        } catch {
-          client = null;
-        }
-      }
-    }
+    const client = new LiaraClient("test-token");
 
     for (const method of requiredMethods) {
       const fn =
@@ -552,5 +545,132 @@ describe("10. Multi-Agent Jury Fixes Verification (§16)", () => {
     assert.strictEqual(typeof snapshot.memoryPeakPct, "number");
   });
 });
+
+describe("11. Next-Gen Innovation & SRE Architecture Features (§Hackathon)", () => {
+  it("correlates failure onset with recent deployments in What Changed engine", () => {
+    const deployTs = new Date(Date.now() - 30000).toISOString(); // 30s ago
+    const failureTs = new Date().toISOString();
+
+    const evidence = {
+      app: { name: "chaos-shop", port: 3100, memoryLimitMB: 512, scale: 1 },
+      applets: [{ state: "running", restarts: 0 }],
+      events: [],
+      releases: [{ id: "rel_buggy", state: "READY", createdAt: deployTs, finishedAt: deployTs }],
+      memory: [],
+      cpu: [],
+      logs: [{ id: "l1", ts: failureTs, text: "Error: DB connection crashed", stream: "stderr" }],
+      probes: [],
+      db: { reachable: false },
+      window: { start: deployTs, end: failureTs },
+    };
+
+    const correlation = correlateChanges(evidence, [{ kind: "DEPLOY_REGRESSION", firstSeen: failureTs, detail_fa: "تغییر ریلیز", evidence: [] }]);
+    assert.strictEqual(correlation.hasDeployCorrelation, true);
+    assert.strictEqual(correlation.culpritReleaseId, "rel_buggy");
+    assert.strictEqual(correlation.correlationScore > 0.8, true);
+    assert.ok(correlation.summary_fa.includes("همبستگی مستقیم"));
+  });
+
+  it("generates 1-click structured Markdown Postmortem report", () => {
+    const incident = {
+      id: "inc_test123",
+      app: "chaos-shop",
+      trigger: "user",
+      symptom: "خطای ۵۰۰ پس از استقرار",
+      window: { start: "2026-10-23T04:00:00.000Z", end: "2026-10-23T04:03:30.000Z" },
+      evidence: [],
+      missingEvidence: [],
+      signals: [{ kind: "MISSING_ENV", firstSeen: "2026-10-23T04:00:15.000Z", detail_fa: "متغیر DATABASE_URL یافت نشد", evidence: [] }],
+      flags: [],
+      hypotheses: [{
+        id: "hyp_missing_env",
+        title_fa: "متغیر محیطی دیتابیس یافت نشد",
+        explain_fa: "پروژه به DATABASE_URL نیاز دارد.",
+        confidence: "high",
+        score: 0.95,
+        evidence_for: [],
+        evidence_against: [],
+        remediations: [],
+      }],
+      rejected: [],
+      actions: [{ tool: "app_update_envs", executedAt: "2026-10-23T04:02:00.000Z", success: true, params: {} }],
+      status: "resolved",
+    };
+
+    const pm = generatePostmortem(incident);
+    assert.strictEqual(pm.incidentId, "inc_test123");
+    assert.strictEqual(pm.durationSeconds, 210);
+    assert.ok(pm.markdown.includes("# گزارش کالبدشکافی حادثه"));
+    assert.ok(pm.markdown.includes("chaos-shop"));
+    assert.ok(pm.actionItems_fa.length >= 1);
+  });
+
+  it("triages build errors into actionable Persian explanations", () => {
+    // 1. Dependency Error
+    const depLog = "npm ERR! code ERESOLVE\nnpm ERR! Could not resolve dependency: peer react@\"^18\" from next";
+    const depRes = triageBuildLogs(depLog);
+    assert.strictEqual(depRes.failureCategory, "DEPENDENCY_ERROR");
+    assert.ok(depRes.rootCause_fa.includes("تداخل وابستگی‌ها"));
+
+    // 2. TypeScript Compilation Error
+    const tsLog = "src/index.ts(12,5): error TS2304: Cannot find name 'mySecretVar'.";
+    const tsRes = triageBuildLogs(tsLog);
+    assert.strictEqual(tsRes.failureCategory, "COMPILATION_ERROR");
+    assert.ok(tsRes.suggestedFix_fa.includes("ایمپورت"));
+
+    // 3. Out of memory during build
+    const oomLog = "<--- Last few GCs --->\nFATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory";
+    const oomRes = triageBuildLogs(oomLog);
+    assert.strictEqual(oomRes.failureCategory, "OUT_OF_MEMORY");
+    assert.ok(oomRes.suggestedFix_fa.includes("NODE_OPTIONS"));
+  });
+
+  it("predicts time to OOM with linear regression in Predictive Shield", () => {
+    const now = Date.now();
+    // Memory growing from 300MB to 460MB over 4 minutes on a 512MB limit
+    const memoryHistory = [
+      { ts: new Date(now - 240000).toISOString(), mb: 300 },
+      { ts: new Date(now - 180000).toISOString(), mb: 340 },
+      { ts: new Date(now - 120000).toISOString(), mb: 380 },
+      { ts: new Date(now - 60000).toISOString(), mb: 420 },
+      { ts: new Date(now).toISOString(), mb: 460 },
+    ];
+
+    const result = evaluatePredictiveShield(memoryHistory, 512);
+    assert.strictEqual(result.isThreatDetected, true);
+    assert.strictEqual(result.threatType, "IMMINENT_OOM");
+    assert.strictEqual(result.riskLevel, "critical");
+    assert.ok(result.estimatedMinutesToImpact !== null && result.estimatedMinutesToImpact <= 15);
+    assert.ok(result.alert_fa.includes("هشدار بحرانی"));
+  });
+
+  it("executes synthetic chaos experiments in Chaos Vaccinator", () => {
+    const probes = [
+      { status: 200, ms: 35, ok: true },
+      { status: 200, ms: 40, ok: true },
+      { status: 200, ms: 38, ok: true },
+    ];
+
+    const result = runChaosVaccination("chaos-shop", probes, true);
+    assert.strictEqual(result.experiments.length, 3);
+    assert.strictEqual(result.resilienceScore >= 85, true);
+    assert.strictEqual(result.verdict_fa, "تاب‌آوری بالا (مقاوم)");
+  });
+
+  it("calculates 35% monthly savings in Smart Rial Hibernation Engine", () => {
+    // Non-production idle app
+    const stagingPlan = evaluateHibernation("chaos-shop-staging", 90, 158400, false);
+    assert.strictEqual(stagingPlan.isEligible, true);
+    assert.strictEqual(stagingPlan.savingsPercent, 35);
+    assert.strictEqual(stagingPlan.monthlySavingsTomans, Math.round(158400 * 0.35));
+    assert.strictEqual(stagingPlan.wakeUpLatencySeconds <= 3, true);
+
+    // Production app protected from accidental hibernation
+    const prodPlan = evaluateHibernation("main-production-api", 120, 500000, true);
+    assert.strictEqual(prodPlan.isEligible, false);
+    assert.strictEqual(prodPlan.monthlySavingsTomans, 0);
+  });
+});
+
 
 

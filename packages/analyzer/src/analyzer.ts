@@ -268,37 +268,46 @@ export class ProjectAnalyzer {
     // 2. Formulate 3 tiers (§8.3)
     const economic: PlanOption = {
       planId: "g2-small",
+      planID: "g2-small",
       name: "اقتصادی (Economic)",
+      name_fa: "اقتصادی (Economic)",
       cpuCores: 0.5,
       ramMB: 512,
       diskGB: 10,
       hourlyPriceTomans: 100,
       monthlyPriceTomans: 100 * 720,
       tier: "economic",
+      isRecommended: false,
       rationale_fa: "حداقل منابع برای راه‌اندازی اولیه و تست با کمترین هزینه.",
     };
 
     const recommended: PlanOption = {
       planId: targetMB > 800 ? "g2-standard" : "g2-medium",
+      planID: targetMB > 800 ? "g2-standard" : "g2-medium",
       name: "پیشنهادی (Recommended)",
+      name_fa: "پیشنهادی (Recommended)",
       cpuCores: 1.0,
       ramMB: 1024,
       diskGB: 20,
       hourlyPriceTomans: 220,
       monthlyPriceTomans: 220 * 720,
       tier: "recommended",
+      isRecommended: true,
       rationale_fa: `حاشیه امن حافظه (${targetMB} مگابایت تخمین نیاز) برای جلوگیری از خطای OOM تحت بار معمول.`,
     };
 
     const scalable: PlanOption = {
       planId: "g2-pro",
+      planID: "g2-pro",
       name: "رشد و مقیاس‌پذیر (Scalable)",
+      name_fa: "رشد و مقیاس‌پذیر (Scalable)",
       cpuCores: 2.0,
       ramMB: 2048,
       diskGB: 40,
       hourlyPriceTomans: 440,
       monthlyPriceTomans: 440 * 720,
       tier: "scalable",
+      isRecommended: false,
       rationale_fa: "منابع کافی برای پیک‌های ترافیکی بالا و پردازش‌های سنگین.",
     };
 

@@ -101,4 +101,7 @@ export interface Incident {
   actions: ActionRecord[];
   verification?: { before: Snapshot; after: Snapshot; passed: boolean; verdict: "resolved" | "partial" | "worse" };
   status: IncidentStatus;
+  changeCorrelation?: import("./sre-extended").ChangeCorrelation;
+  postmortem?: string;
+  predictiveShield?: import("./sre-extended").PredictiveShieldResult;
 }

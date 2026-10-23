@@ -29,6 +29,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let activeApprovalId = null;
   let cancelCountdownTimer = null;
+  let currentMemoryLimitMB = 512;
 
   // 1. Tab Navigation
   document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -144,9 +145,10 @@ document.addEventListener("DOMContentLoaded", () => {
         if (p.ms !== null) probeLatencyVal.textContent = `${Number(p.ms).toLocaleString("fa-IR")} میلی‌ثانیه`;
         if (p.heapUsed !== null) {
           ramUsageVal.textContent = `${Number(p.heapUsed).toLocaleString("fa-IR")} مگابایت`;
-          const pct = Math.min(100, Math.round((p.heapUsed / 512) * 100));
+          const limit = currentMemoryLimitMB || 512;
+          const pct = Math.min(100, Math.round((p.heapUsed / limit) * 100));
           ramProgressBar.style.width = `${pct}%`;
-          ramLimitText.textContent = `از سقف ۵۱۲ مگابایت پلن (${pct.toLocaleString("fa-IR")}٪)`;
+          ramLimitText.textContent = `از سقف ${Number(limit).toLocaleString("fa-IR")} مگابایت پلن (${pct.toLocaleString("fa-IR")}٪)`;
           ramProgressBar.classList.toggle("is-critical", pct > 80);
         }
       } catch (err) {}
@@ -248,13 +250,25 @@ document.addEventListener("DOMContentLoaded", () => {
           appStatusVal.className = "status-indicator-badge error";
         }
 
+        if (data.app.memoryLimitMB) {
+          currentMemoryLimitMB = data.app.memoryLimitMB;
+        }
+
         if (data.app.memoryLimitMB && data.app.heapUsedMB) {
           const limit = data.app.memoryLimitMB;
           const used = data.app.heapUsedMB;
           const pct = Math.min(100, Math.round((used / limit) * 100));
-          ramLimitText.textContent = `از سقف ${limit.toLocaleString("fa-IR")} مگابایت پلن (${pct.toLocaleString("fa-IR")}٪)`;
+          ramLimitText.textContent = `از سقف ${Number(limit).toLocaleString("fa-IR")} مگابایت پلن (${pct.toLocaleString("fa-IR")}٪)`;
           ramProgressBar.style.width = `${pct}%`;
           ramProgressBar.classList.toggle("is-critical", pct > 80);
+        }
+
+        const planNameEl = document.querySelector(".app-plan-badge .plan-name");
+        const planSpecEl = document.querySelector(".app-plan-badge .plan-spec");
+        if (planNameEl && data.app.plan) planNameEl.textContent = data.app.plan;
+        if (planSpecEl && data.app.memoryLimitMB) {
+          const cores = data.app.planDetails?.cpuCores || (data.app.memoryLimitMB >= 1024 ? 1.0 : 0.5);
+          planSpecEl.textContent = `${Number(data.app.memoryLimitMB).toLocaleString("fa-IR")} مگابایت رم · ${Number(cores).toLocaleString("fa-IR")} هسته`;
         }
       }
 
@@ -266,13 +280,77 @@ document.addEventListener("DOMContentLoaded", () => {
       if (data.audit) renderAudit(data.audit);
 
       // Render Incident
-      if (data.currentIncident) {
-        renderIncident(data.currentIncident);
-      }
+      renderIncident(data.currentIncident || null);
+
+      // Render SRE Shields (§10, §Hackathon)
+      if (data.predictiveShield) renderPredictiveShield(data.predictiveShield);
+      if (data.chaosVaccine) renderChaosVaccine(data.chaosVaccine);
+      if (data.hibernation) renderHibernation(data.hibernation);
     } catch (err) {}
   }
   fetchState();
   setInterval(fetchState, 4000);
+
+  // Helper: Append thinking indicator
+  function appendThinkingIndicator() {
+    const row = document.createElement("div");
+    row.className = "message-row agent-row agent-thinking-row";
+    row.id = "agentThinkingIndicator";
+
+    const avatar = document.createElement("div");
+    avatar.className = "avatar agent-avatar";
+    avatar.innerHTML = icon("compass");
+
+    const bubble = document.createElement("div");
+    bubble.className = "agent-thinking-bubble";
+    bubble.innerHTML = `
+      <span>سُکان در حال تحلیل تله‌متری و بررسی است</span>
+      <div class="thinking-dots">
+        <span class="thinking-dot"></span>
+        <span class="thinking-dot"></span>
+        <span class="thinking-dot"></span>
+      </div>
+    `;
+
+    row.appendChild(avatar);
+    row.appendChild(bubble);
+    chatFeed.appendChild(row);
+    chatFeed.scrollTop = chatFeed.scrollHeight;
+    return row;
+  }
+
+  function removeThinkingIndicator(row) {
+    if (row && row.parentNode) {
+      row.remove();
+    } else {
+      const el = document.getElementById("agentThinkingIndicator");
+      if (el) el.remove();
+    }
+  }
+
+  // Toast notification helper
+  function showToast(msg) {
+    const toast = document.createElement("div");
+    toast.className = "sokan-toast";
+    toast.innerHTML = `<svg class="ico" aria-hidden="true" style="color: var(--mint);"><use href="#i-check-circle"/></svg><span>${escapeHtml(msg)}</span>`;
+    document.body.appendChild(toast);
+    setTimeout(() => {
+      toast.style.transition = "opacity 0.4s ease, transform 0.4s ease";
+      toast.style.opacity = "0";
+      toast.style.transform = "translateY(10px)";
+      setTimeout(() => toast.remove(), 400);
+    }, 3500);
+  }
+
+  function triggerConsoleSyncPulse(message) {
+    const appCard = document.querySelector(".app-card");
+    if (appCard) {
+      appCard.classList.remove("console-pulse-highlight");
+      void appCard.offsetWidth; // trigger reflow
+      appCard.classList.add("console-pulse-highlight");
+    }
+    if (message) showToast(message);
+  }
 
   // 4. Chat Handler
   chatForm.addEventListener("submit", async (e) => {
@@ -282,6 +360,14 @@ document.addEventListener("DOMContentLoaded", () => {
     chatInput.value = "";
     appendChatMessage("user", text);
 
+    // Auto-collapse quick chips after user engagement to save vertical space
+    const quickChipsEl = document.querySelector(".quick-chips");
+    if (quickChipsEl && !quickChipsEl.classList.contains("collapsed")) {
+      quickChipsEl.classList.add("collapsed");
+    }
+
+    const thinkingRow = appendThinkingIndicator();
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -289,13 +375,10 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({ message: text }),
       });
       const data = await res.json();
+      removeThinkingIndicator(thinkingRow);
 
       if (data.reply_fa) {
-        appendChatMessage("agent", data.reply_fa);
-      }
-
-      if (data.plans) {
-        renderPlanRecommendation(data.plans);
+        appendChatMessage("agent", data.reply_fa, null, data.aiProvider);
       }
 
       if (data.approval) {
@@ -304,83 +387,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (data.incident) {
         renderIncident(data.incident);
+        // Switch to incident tab so user doesn't miss the diagnostic
+        const incTabBtn = document.querySelector('.tab-btn[data-tab="tab-incident"]');
+        if (incTabBtn && !incTabBtn.classList.contains("active")) {
+          incTabBtn.click();
+        }
       }
     } catch (err) {
+      removeThinkingIndicator(thinkingRow);
       appendChatMessage("agent", "متأسفانه در ارتباط با سرور خطایی رخ داد: " + err.message, "error");
     }
   });
-
-  function renderPlanRecommendation(plans) {
-    if (!plans || plans.length === 0) return;
-    const plansCard = document.createElement("div");
-    plansCard.className = "plans-recommendation-wrapper";
-    plansCard.innerHTML = `
-      <div class="plans-rec-header">
-        <span class="plans-rec-title">${icon("cpu")} پلن‌های پیشنهادی لیارا برای این پروژه</span>
-        <span class="plans-rec-sub">محاسبه‌شده بر اساس حجم سورس‌کد، فریم‌ورک و نیاز پردازشی</span>
-      </div>
-      <div class="plans-grid">
-        ${plans
-          .map((p) => {
-            const isRec = p.isRecommended || p.tier === "standard";
-            return `
-            <div class="plan-card-item ${isRec ? "recommended" : ""}" id="planCard_${p.planID}">
-              ${isRec ? `<div class="plan-ribbon">پیشنهادی</div>` : ""}
-              <div class="plan-item-name">${escapeHtml(p.name_fa)}</div>
-              <div class="plan-item-id"><code>${escapeHtml(p.planID)}</code></div>
-              <div class="plan-item-specs">
-                <div class="spec-row">
-                  <span>حافظه رم:</span>
-                  <strong>${Number(p.ramMB).toLocaleString("fa-IR")} مگابایت</strong>
-                </div>
-                <div class="spec-row">
-                  <span>پردازنده:</span>
-                  <strong>${p.cpuCores} هسته</strong>
-                </div>
-                <div class="spec-row">
-                  <span>دیسک:</span>
-                  <strong>${Number(p.diskGB).toLocaleString("fa-IR")} گیگابایت</strong>
-                </div>
-              </div>
-              <div class="plan-item-price">
-                <span class="price-val">${Number(p.monthlyPriceTomans).toLocaleString("fa-IR")}</span>
-                <span class="price-unit">تومان / ماه</span>
-              </div>
-              <button type="button" class="btn btn-sm ${isRec ? "btn-primary" : "btn-outline"} btn-select-plan" data-plan-id="${p.planID}">
-                ${isRec ? icon("check") + " انتخاب پلن پیشنهادی" : "انتخاب این پلن"}
-              </button>
-            </div>
-          `;
-          })
-          .join("")}
-      </div>
-    `;
-
-    chatFeed.appendChild(plansCard);
-    chatFeed.scrollTop = chatFeed.scrollHeight;
-
-    plansCard.querySelectorAll(".btn-select-plan").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const planId = btn.dataset.planId;
-        const selected = plans.find((p) => p.planID === planId);
-        if (!selected) return;
-
-        plansCard.querySelectorAll(".plan-card-item").forEach((c) => (c.style.outline = "none"));
-        const chosenCard = document.getElementById(`planCard_${planId}`);
-        if (chosenCard) chosenCard.style.outline = "2px solid var(--cyan)";
-
-        const activeCard = document.getElementById("activeApprovalCard");
-        if (activeCard) {
-          const costValueEl = activeCard.querySelector(".approval-field-row:nth-child(3) .field-value");
-          if (costValueEl) {
-            costValueEl.textContent = `${Number(selected.monthlyPriceTomans).toLocaleString("fa-IR")} تومان/ماه (${selected.name_fa})`;
-          }
-        }
-
-        appendChatMessage("user", `پلن «${selected.name_fa}» (${selected.planID}) انتخاب شد.`);
-      });
-    });
-  }
 
   // Quick Chips
   document.querySelectorAll(".chip-btn").forEach((chip) => {
@@ -411,7 +428,7 @@ document.addEventListener("DOMContentLoaded", () => {
     shield: "shield-check",
   };
 
-  function appendChatMessage(role, text, tone) {
+  function appendChatMessage(role, text, tone, aiProvider) {
     const row = document.createElement("div");
     row.className = `message-row ${role}-row`;
 
@@ -422,7 +439,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const bubble = document.createElement("div");
     bubble.className = `message-bubble ${role}-bubble`;
     const toneIcon = MESSAGE_TONES[tone] ? `<span class="msg-tone msg-tone--${tone}">${icon(MESSAGE_TONES[tone])}</span>` : "";
-    bubble.innerHTML = toneIcon + formatMarkdown(text);
+    const providerBadge = (role === "agent" && aiProvider)
+      ? `<div class="msg-ai-tag">${icon("cpu")} ${escapeHtml(aiProvider)}</div>`
+      : "";
+    bubble.innerHTML = providerBadge + toneIcon + formatMarkdown(text);
 
     row.appendChild(avatar);
     row.appendChild(bubble);
@@ -442,18 +462,62 @@ document.addEventListener("DOMContentLoaded", () => {
   window.escapeHtml = escapeHtml;
 
   function formatMarkdown(text) {
-    return escapeHtml(text)
-      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\n/g, "<br/>");
+    const raw = String(text ?? "");
+    const lines = raw.split("\n");
+    const htmlLines = lines.map((line) => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("### ")) {
+        return `<div class="chat-md-heading">${icon("target")}<span>${escapeHtml(trimmed.slice(4))}</span></div>`;
+      }
+      if (trimmed.startsWith("• ") || trimmed.startsWith("- ")) {
+        const itemContent = escapeHtml(trimmed.slice(2))
+          .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+          .replace(/`([^`]+)`/g, '<code dir="ltr">$1</code>');
+        return `<div class="chat-md-bullet"><span class="chat-md-bullet-dot">•</span><span>${itemContent}</span></div>`;
+      }
+      return escapeHtml(line)
+        .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+        .replace(/`([^`]+)`/g, '<code dir="ltr">$1</code>');
+    });
+
+    return htmlLines.join("<br/>");
   }
 
-  // 5. Approval Card Component (§12.2)
+  // 5. Approval Card Component (§12.2, ISS-04)
   function renderApprovalCard(approval) {
     activeApprovalId = approval.id;
     approvalCardContainer.classList.remove("hidden");
     const isL3 = approval.riskLevel === "L3";
     const card = approval.card;
+
+    // Helper: format env vars with collapsible badge list to prevent cognitive overload
+    let formattedWhyHtml = escapeHtml(card.why_fa);
+    const envMatch = card.why_fa.match(/(?:متغیرهای الزامی:|متغیرهای محیطی:)(.*)/);
+    if (envMatch && envMatch[1]) {
+      const prefixText = card.why_fa.slice(0, envMatch.index).trim();
+      const envList = envMatch[1].split(/[,،]+/).map((s) => s.trim()).filter(Boolean);
+      if (envList.length > 0) {
+        const visibleList = envList.slice(0, 2);
+        const hiddenList = envList.slice(2);
+        const visibleBadges = visibleList.map((e) => `<span class="env-pill" dir="ltr">${escapeHtml(e)}</span>`).join("");
+        let extraBadgesHtml = "";
+        if (hiddenList.length > 0) {
+          const hiddenBadges = hiddenList.map((e) => `<span class="env-pill" dir="ltr">${escapeHtml(e)}</span>`).join("");
+          extraBadgesHtml = `
+            <button type="button" class="btn-more-envs" id="btnToggleMoreEnvs" aria-expanded="false">+${hiddenList.length} متغیر دیگر</button>
+            <span class="env-extra-pills hidden" id="extraEnvsBox">${hiddenBadges}</span>
+          `;
+        }
+        formattedWhyHtml = `
+          <span>${escapeHtml(prefixText)}</span>
+          <div class="env-pill-container">
+            <span class="env-label-prefix">متغیرهای الزامی:</span>
+            ${visibleBadges}
+            ${extraBadgesHtml}
+          </div>
+        `;
+      }
+    }
 
     approvalCardContainer.innerHTML = `
       <div class="approval-card ${isL3 ? "l3-card" : ""}" id="activeApprovalCard">
@@ -465,19 +529,28 @@ document.addEventListener("DOMContentLoaded", () => {
           <span class="approval-risk-badge">${escapeHtml(approval.riskLevel)}</span>
         </div>
 
-        <div class="approval-fields">
+        <div class="approval-fields-compact">
           <div class="approval-field-row">
-            <span class="field-label">چه کاری:</span>
+            <span class="field-label">اقدام:</span>
             <span class="field-value">${escapeHtml(card.what_fa)}</span>
           </div>
           <div class="approval-field-row">
-            <span class="field-label">چرا:</span>
-            <span class="field-value">${escapeHtml(card.why_fa)}</span>
+            <span class="field-label">دلیل:</span>
+            <span class="field-value">${formattedWhyHtml}</span>
           </div>
           <div class="approval-field-row">
             <span class="field-label">هزینه:</span>
-            <span class="field-value" style="color: var(--cyan);">${escapeHtml(card.cost_fa)}</span>
+            <span class="field-value approval-cost-val" style="color: var(--cyan);">${escapeHtml(card.cost_fa)}</span>
           </div>
+        </div>
+
+        <!-- Collapsible Technical Details (ISS-04) -->
+        <button type="button" class="approval-details-toggle" id="btnToggleApprovalDetails" aria-expanded="false">
+          <span class="toggle-text">${icon("info")} جزئیات اثر بر پایداری، بازگشت و معیار موفقیت</span>
+          ${icon("chevron", "toggle-chevron")}
+        </button>
+
+        <div class="approval-details-drawer hidden" id="approvalDetailsDrawer">
           <div class="approval-field-row">
             <span class="field-label">اثر:</span>
             <span class="field-value">${escapeHtml(card.impact_fa)}</span>
@@ -499,7 +572,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <label for="l3TypedInput" style="font-size: 0.8rem; font-weight: bold; color: var(--danger);">
               تأیید امنیتی: برای ادامه، نام اپلیکیشن <code>${escapeHtml(approval.confirmationText)}</code> را دقیقاً تایپ کنید.
             </label>
-            <input type="text" id="l3TypedInput" class="l3-input" placeholder="${escapeHtml(approval.confirmationText)}" />
+            <input type="text" id="l3TypedInput" class="l3-input" placeholder="${escapeHtml(approval.confirmationText)}" aria-label="تأیید نام اپلیکیشن" dir="ltr" />
           </div>
         `
             : ""
@@ -508,18 +581,42 @@ document.addEventListener("DOMContentLoaded", () => {
         <div id="approvalCountdownSlot"></div>
 
         <div class="approval-actions" id="approvalActionButtons">
-          <button id="btnApprove" class="btn btn-approve" ${isL3 ? "disabled" : ""}>
+          <button id="btnApprove" class="btn btn-approve" ${isL3 ? "disabled" : ""} tabindex="0">
             ${icon("check")} تأیید و اجرا
           </button>
-          <button id="btnReject" class="btn btn-reject">
+          <button id="btnReject" class="btn btn-reject" tabindex="0">
             ${icon("x")} رد درخواست
           </button>
-          <button id="btnExplain" class="btn btn-outline">
+          <button id="btnExplain" class="btn btn-outline" tabindex="0" title="مشاهده تحلیل کامل و دریافت پرامپت راهنما">
             ${icon("help")} توضیح بیشتر
           </button>
         </div>
       </div>
     `;
+
+    // Attach collapsible more envs toggle
+    const btnToggleMore = document.getElementById("btnToggleMoreEnvs");
+    const extraEnvsBox = document.getElementById("extraEnvsBox");
+    if (btnToggleMore && extraEnvsBox) {
+      btnToggleMore.addEventListener("click", () => {
+        const isHidden = extraEnvsBox.classList.contains("hidden");
+        extraEnvsBox.classList.toggle("hidden", !isHidden);
+        btnToggleMore.textContent = isHidden ? "بستن لیست" : `+${extraEnvsBox.children.length} متغیر دیگر`;
+        btnToggleMore.setAttribute("aria-expanded", String(isHidden));
+      });
+    }
+
+    // Attach technical details toggle
+    const toggleDetailsBtn = document.getElementById("btnToggleApprovalDetails");
+    const detailsDrawer = document.getElementById("approvalDetailsDrawer");
+    if (toggleDetailsBtn && detailsDrawer) {
+      toggleDetailsBtn.addEventListener("click", () => {
+        const isHidden = detailsDrawer.classList.contains("hidden");
+        detailsDrawer.classList.toggle("hidden", !isHidden);
+        toggleDetailsBtn.classList.toggle("is-open", isHidden);
+        toggleDetailsBtn.setAttribute("aria-expanded", String(isHidden));
+      });
+    }
 
     // Handle L3 typing requirement
     if (isL3) {
@@ -538,7 +635,17 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("btnApprove").addEventListener("click", () => handleApprove(approval));
     document.getElementById("btnReject").addEventListener("click", () => handleReject(approval.id));
     document.getElementById("btnExplain").addEventListener("click", () => {
+      // 1. Expand technical details inside the card
+      if (detailsDrawer && detailsDrawer.classList.contains("hidden")) {
+        detailsDrawer.classList.remove("hidden");
+        if (toggleDetailsBtn) {
+          toggleDetailsBtn.classList.add("is-open");
+          toggleDetailsBtn.setAttribute("aria-expanded", "true");
+        }
+      }
+      // 2. Query assistant for full explanation
       chatInput.value = `لطفاً درباره اقدام «${card.title_fa}» و دلایل آن با جزئیات توضیح بده.`;
+      showToast("در حال دریافت تحلیل و مستندات SRE از سُکان...");
       chatForm.dispatchEvent(new Event("submit"));
     });
 
@@ -558,15 +665,15 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json();
 
       if (!res.ok) {
-        alert("خطا در تأیید: " + data.error);
+        appendChatMessage("agent", "خطا در تأیید درخواست: " + (data.error || "خطای ناشناخته"), "error");
         return;
       }
 
       if (isL3) {
-        // Show 10-second cancel window countdown (§7.1)
+        // Show 10-second cancel window countdown with prominent visual progress bar (§7.1, ISS-04)
         const countdownSlot = document.getElementById("approvalCountdownSlot");
         const actionSlot = document.getElementById("approvalActionButtons");
-        actionSlot.innerHTML = `<button id="btnCancelL3" class="btn btn-danger">${icon("stop")} لغو فوری عملیات</button>`;
+        actionSlot.innerHTML = `<button id="btnCancelL3" class="btn btn-danger" tabindex="0">${icon("stop")} لغو فوری عملیات</button>`;
 
         let remainingSec = 10;
         countdownSlot.innerHTML = `
@@ -574,16 +681,23 @@ document.addEventListener("DOMContentLoaded", () => {
             <span>${icon("timer")} پنجره لغو فعال است؛ اجرا تا <strong id="countdownSec">${remainingSec.toLocaleString("fa-IR")}</strong> ثانیه دیگر</span>
             <span class="pulse-dot"></span>
           </div>
+          <div class="cancel-timer-bar" role="progressbar" aria-valuenow="10" aria-valuemin="0" aria-valuemax="10">
+            <div class="cancel-timer-fill" id="cancelTimerFill" style="width: 100%;"></div>
+          </div>
         `;
 
         cancelCountdownTimer = setInterval(() => {
           remainingSec--;
           const secEl = document.getElementById("countdownSec");
+          const fillEl = document.getElementById("cancelTimerFill");
           if (secEl) secEl.textContent = remainingSec.toLocaleString("fa-IR");
+          if (fillEl) fillEl.style.width = (remainingSec * 10) + "%";
+
           if (remainingSec <= 0) {
             clearInterval(cancelCountdownTimer);
             approvalCardContainer.classList.add("hidden");
             appendChatMessage("agent", "اقدام سطح L3 از گیت امنیتی عبور کرد و اجرا شد.", "success");
+            triggerConsoleSyncPulse("اپلیکیشن طبق تأییدیه حذف گردید.");
             fetchState();
           }
         }, 1000);
@@ -597,10 +711,11 @@ document.addEventListener("DOMContentLoaded", () => {
       } else {
         approvalCardContainer.classList.add("hidden");
         appendChatMessage("agent", "درخواست تأیید و توسط موتور سیاست‌ها اجرا شد.", "success");
+        triggerConsoleSyncPulse("دستور استقرار/تنظیمات با موفقیت روی سرور اعمال شد.");
         setTimeout(fetchState, 1000);
       }
     } catch (err) {
-      alert("خطا در تأیید: " + err.message);
+      appendChatMessage("agent", "خطا در برقراری ارتباط هنگام تأیید: " + err.message, "error");
     }
   }
 
@@ -612,20 +727,52 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {}
   }
 
+  // Global Keyboard Shortcuts (Escape to dismiss approval or cancel L3)
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      const cardSlot = document.getElementById("approvalCardContainer");
+      if (cardSlot && !cardSlot.classList.contains("hidden")) {
+        const cancelL3Btn = document.getElementById("btnCancelL3");
+        if (cancelL3Btn) {
+          cancelL3Btn.click();
+        } else if (activeApprovalId) {
+          handleReject(activeApprovalId);
+        }
+      }
+    }
+  });
+
   // 6. Incident Renderer (§10.7)
+  let lastIncidentKey = "";
   function renderIncident(inc) {
     if (!inc || !inc.hypotheses || inc.hypotheses.length === 0) {
-      incidentEmptyState.classList.remove("hidden");
-      incidentActiveView.classList.add("hidden");
-      tabIncidentBadge.classList.add("hidden");
-      incidentStateVal.innerHTML = '<span class="badge-clean">بدون حادثه فعال</span>';
+      if (lastIncidentKey !== "empty") {
+        lastIncidentKey = "empty";
+        incidentEmptyState.classList.remove("hidden");
+        incidentActiveView.classList.add("hidden");
+        tabIncidentBadge.classList.add("hidden");
+        incidentStateVal.innerHTML = '<span class="badge-clean">بدون حادثه فعال</span>';
+      }
       return;
     }
 
+    const currentKey = `${inc.id}_${inc.status}_${inc.verification ? inc.verification.message_fa : ""}_${inc.hypotheses.length}`;
+    if (currentKey === lastIncidentKey) {
+      return;
+    }
+    lastIncidentKey = currentKey;
+
     incidentEmptyState.classList.add("hidden");
     incidentActiveView.classList.remove("hidden");
-    tabIncidentBadge.classList.remove("hidden");
-    incidentStateVal.innerHTML = `<span class="text-danger" style="font-weight: bold;">${icon("alert")} رخداد فعال</span>`;
+
+    const isResolved = inc.status === "resolved";
+    if (isResolved) {
+      incidentStateVal.innerHTML = `<span class="text-success" style="font-weight: bold;">${icon("check-circle")} برطرف شد</span>`;
+      tabIncidentBadge.classList.add("hidden");
+    } else {
+      incidentStateVal.innerHTML = `<span class="text-danger" style="font-weight: bold;">${icon("alert")} رخداد فعال</span>`;
+      tabIncidentBadge.classList.remove("hidden");
+    }
 
     const topHyp = inc.hypotheses[0];
 
@@ -633,15 +780,39 @@ document.addEventListener("DOMContentLoaded", () => {
       <div class="incident-card-top">
         <div class="incident-header-row">
           <div class="incident-title">
-            ${icon("siren")}<span>حادثه:</span>
+            ${icon(isResolved ? "check-circle" : "siren")}<span>حادثه:</span>
             <span>${escapeHtml(inc.symptom)}</span>
           </div>
-          <span class="confidence-tag">وضعیت: ${inc.status === "resolved" ? "برطرف شد" : "در حال پیگیری"}</span>
+          <span class="confidence-tag" style="${isResolved ? "background: rgba(135,252,196,0.15); color: var(--mint);" : ""}">وضعیت: ${isResolved ? "برطرف شد" : "در حال پیگیری"}</span>
         </div>
         <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.4rem;">
           پنجره زمانی رخداد: ${new Date(inc.window.start).toLocaleTimeString("fa-IR")} تا ${new Date(inc.window.end).toLocaleTimeString("fa-IR")}
         </p>
       </div>
+
+      ${
+        inc.verification
+          ? `
+        <div class="verification-box" style="margin-top: 0.85rem; background: rgba(135, 252, 196, 0.12); border: 1px solid var(--mint); border-radius: var(--radius-md); padding: 0.75rem 1rem;">
+          <div style="display: flex; align-items: center; gap: 0.5rem; color: var(--mint); font-weight: 700; font-size: 0.9rem;">
+            ${icon("check-circle")}<span>نتیجه راستی‌آزمایی SRE (Verification Succeeded)</span>
+          </div>
+          <p style="margin: 0.35rem 0 0; font-size: 0.85rem; color: var(--text);">${escapeHtml(inc.verification.message_fa)}</p>
+          ${
+            inc.verification.snapshot
+              ? `
+            <div style="margin-top: 0.5rem; display: flex; gap: 1rem; font-size: 0.8rem; color: #d0d7de; flex-wrap: wrap;">
+              <span>تعداد خطاهای لاگ: <strong style="color: var(--mint);">${Number(inc.verification.snapshot.errorsPerMinute || 0).toLocaleString("fa-IR")}</strong></span>
+              <span>پروب‌های موفق: <strong style="color: var(--mint);">${Number(inc.verification.snapshot.probeOk || 0).toLocaleString("fa-IR")} از ${Number(inc.verification.snapshot.probeTotal || 0).toLocaleString("fa-IR")}</strong></span>
+              <span>اوج حافظه: <strong style="color: var(--mint);">${Number(inc.verification.snapshot.memoryPeakPct || 0).toLocaleString("fa-IR")}٪</strong></span>
+            </div>
+          `
+              : ""
+          }
+        </div>
+      `
+          : ""
+      }
 
       <div style="margin-top: 1rem;">
         <h4 class="section-heading">${icon("target")} علت‌های محتمل، به ترتیب احتمال</h4>
@@ -684,14 +855,12 @@ document.addEventListener("DOMContentLoaded", () => {
           : ""
       }
 
-      <div class="tech-details-toggle" id="toggleFixBrief" role="button" tabindex="0" aria-expanded="false">
-        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; font-weight: 600;">
-          <span class="toggle-label">${icon("file")} جزئیات فنی و خلاصهٔ اصلاح برای ایجنت کدنویس</span>
-          ${icon("chevron", "toggle-chevron")}
-        </div>
-        <div id="fixBriefContent" class="hidden">
-          <pre class="fix-brief-pre" id="fixBriefPre">در حال بارگذاری…</pre>
-        </div>
+      <button type="button" class="tech-details-toggle" id="toggleFixBrief" aria-expanded="false" aria-controls="fixBriefContent">
+        <span class="toggle-label" style="display: flex; align-items: center; gap: 0.4rem;">${icon("file")} جزئیات فنی و خلاصهٔ اصلاح برای ایجنت کدنویس</span>
+        ${icon("chevron", "toggle-chevron")}
+      </button>
+      <div id="fixBriefContent" class="hidden" style="margin-top: 0.5rem;">
+        <pre class="fix-brief-pre" id="fixBriefPre">در حال بارگذاری…</pre>
       </div>
     `;
 
@@ -763,7 +932,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // 8. Scenario Runner Global Hook (§16)
   window.runScenario = async function (type) {
     if (type === "deploy") {
-      chatInput.value = "این پروژه رو با پلن پیشنهادی دیپلوی کن";
+      chatInput.value = "این پروژه رو دیپلوی کن";
       chatForm.dispatchEvent(new Event("submit"));
     } else if (type === "error500") {
       await fetch("/api/demo/scenario-2-error500", { method: "POST" });
@@ -784,6 +953,78 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json();
       appendChatMessage("agent", `نتیجهٔ تست دستکاری: ${data.message} — کد خطا: \`${data.code}\``, "shield");
       fetchState();
+    } else if (type === "chaos") {
+      chatInput.value = "آزمون واکسیناسیون ابری و تاب‌آوری برنامه رو اجرا کن";
+      chatForm.dispatchEvent(new Event("submit"));
+    } else if (type === "predictive") {
+      chatInput.value = "وضعیت سپر پیش‌دستانه امواج ترافیک و سرریز رم رو بررسی کن";
+      chatForm.dispatchEvent(new Event("submit"));
+    } else if (type === "hibernation") {
+      chatInput.value = "وضعیت بهینه‌سازی خواب زمستانی و صرفه‌جویی ریالی کانتینر چطوره؟";
+      chatForm.dispatchEvent(new Event("submit"));
+    } else if (type === "buildtriage") {
+      chatInput.value = "تریاژ هوشمند خطاهای لاگ بیلد استقرار رو نشون بده";
+      chatForm.dispatchEvent(new Event("submit"));
+    }
+  };
+
+  // 9. SRE Shields Dynamic Renderers (§10, §Hackathon)
+  function renderPredictiveShield(shield) {
+    const riskBadge = document.getElementById("shieldRiskBadge");
+    const alertText = document.getElementById("shieldAlertText");
+    const slopeVal = document.getElementById("shieldSlopeVal");
+    const timeVal = document.getElementById("shieldTimeToOom");
+    const actionText = document.getElementById("shieldActionText");
+
+    if (riskBadge) {
+      riskBadge.textContent = shield.riskLevel === "critical" ? "بحرانی 🚨" : shield.riskLevel === "warning" ? "هشدار ⚠️" : "پایدار و ایمن ✅";
+      riskBadge.className = `badge ${shield.riskLevel === "critical" ? "badge-danger" : shield.riskLevel === "warning" ? "badge-warning" : "badge-success"}`;
+    }
+    if (alertText && shield.alert_fa) alertText.textContent = shield.alert_fa;
+    if (slopeVal) slopeVal.textContent = `${Number(shield.memorySlopeMBPerMin || 0).toLocaleString("fa-IR")} MB/min`;
+    if (timeVal) timeVal.textContent = shield.estimatedMinutesToImpact ? `حدود ${Number(shield.estimatedMinutesToImpact).toLocaleString("fa-IR")} دقیقه` : "نامحدود (امن)";
+    if (actionText && shield.recommendedAction_fa) actionText.textContent = shield.recommendedAction_fa;
+  }
+
+  function renderChaosVaccine(res) {
+    const scoreNum = document.getElementById("chaosScoreNum");
+    const verdictBadge = document.getElementById("chaosVerdictBadge");
+    const adviceText = document.getElementById("chaosAdviceText");
+    const expList = document.getElementById("chaosExperimentsList");
+
+    if (scoreNum && res.resilienceScore !== undefined) scoreNum.textContent = Number(res.resilienceScore).toLocaleString("fa-IR");
+    if (verdictBadge && res.verdict_fa) verdictBadge.textContent = res.verdict_fa;
+    if (adviceText && res.remediationAdvice_fa) adviceText.textContent = res.remediationAdvice_fa;
+    if (expList && res.experiments) {
+      expList.innerHTML = res.experiments
+        .map((e) => `<div class="chaos-exp-item"><svg class="ico" style="color: ${e.passed ? "var(--mint)" : "var(--warning)"};" aria-hidden="true"><use href="#i-${e.passed ? "check" : "alert"}"/></svg><span>${escapeHtml(e.name)}: ${escapeHtml(e.observation_fa)}</span></div>`)
+        .join("");
+    }
+  }
+
+  function renderHibernation(hib) {
+    const savingsVal = document.getElementById("hibernationSavingsVal");
+    const percentVal = document.getElementById("hibernationPercentVal");
+    if (savingsVal && hib.monthlySavingsTomans !== undefined) {
+      savingsVal.textContent = `${Number(hib.monthlySavingsTomans).toLocaleString("fa-IR")} تومان`;
+    }
+    if (percentVal && hib.savingsPercent !== undefined) {
+      percentVal.textContent = `${Number(hib.savingsPercent).toLocaleString("fa-IR")}٪ کل پلن`;
+    }
+  }
+
+  window.generateAndShowPostmortem = async function() {
+    const area = document.getElementById("postmortemOutputArea");
+    const pre = document.getElementById("postmortemPreText");
+    if (!area || !pre) return;
+    area.classList.remove("hidden");
+    pre.textContent = "در حال تولید خودکار گزارش کالبدشکافی SRE از موتور تحلیل حادثه...";
+    try {
+      const res = await fetch("/api/incident/postmortem");
+      const pm = await res.json();
+      pre.textContent = pm.markdown || JSON.stringify(pm, null, 2);
+    } catch (e) {
+      pre.textContent = "خطا در برقراری ارتباط با سرور: " + e.message;
     }
   };
 });

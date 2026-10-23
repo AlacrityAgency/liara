@@ -43,6 +43,9 @@
     <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></symbol>
     <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></symbol>
+    <symbol id="i-credit-card" viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></symbol>
   </svg>
   <!-- 1. Official Liara Top Navbar (RTL) -->
   <header class="liara-topbar">
@@ -68,11 +71,11 @@
       <div class="topbar-divider">/</div>
 
       <!-- Org / Team Selector -->
-      <div class="org-dropdown-trigger" id="orgDropdownBtn">
+      <button type="button" class="org-dropdown-trigger" id="orgDropdownBtn" aria-label="انتخاب سازمان" tabindex="0">
         <span class="org-name">لیارا</span>
         <span class="org-indicator" aria-hidden="true"></span>
         <span class="dropdown-chevron">‹</span>
-      </div>
+      </button>
 
       <!-- Nav Links -->
       <nav class="topbar-nav-links">
@@ -94,7 +97,7 @@
     <!-- Left side: Search, Operational Status, Team Credit, User Profile -->
     <div class="topbar-left">
       <!-- Search Input with Command-K -->
-      <div class="command-search-box">
+      <div class="command-search-box" role="button" tabindex="0" aria-label="جستجو در سرویس‌ها">
         <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
         <span class="search-placeholder">جستجو در سرویس‌ها...</span>
         <kbd class="kbd-badge">⌘K</kbd>
@@ -124,7 +127,7 @@
       </div>
 
       <!-- User Account Menu -->
-      <div class="user-profile-menu">
+      <div class="user-profile-menu" role="button" tabindex="0" aria-label="منوی حساب کاربری">
         <div class="user-avatar-circle">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
         </div>
@@ -197,6 +200,10 @@
           <div id="connectionModeBadge" class="mode-badge simulated">
             <span class="pulse-dot"></span>
             <span id="connectionModeText">شبیه‌ساز محلی</span>
+          </div>
+          <div id="aiEngineBadge" class="mode-badge ai-active" style="background: rgba(0, 229, 255, 0.1); border: 1px solid rgba(0, 229, 255, 0.25); color: var(--cyan); display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; padding: 0.2rem 0.55rem; border-radius: var(--radius-pill);">
+            <span class="pulse-dot" style="background: var(--cyan); width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 6px var(--cyan);"></span>
+            <span id="aiEngineText">DeepSeek V3 (ابر آروان)</span>
           </div>
         </div>
 
@@ -334,6 +341,7 @@
             </div>
 
             <div class="copilot-badges">
+              <span class="panel-badge-hitl" style="background: rgba(0, 229, 255, 0.12); color: var(--cyan); border-color: rgba(0, 229, 255, 0.3);"><svg class="ico" aria-hidden="true"><use href="#i-cpu"/></svg>DeepSeek V3 (آروان)</span>
               <span class="panel-badge-hitl"><svg class="ico" aria-hidden="true"><use href="#i-shield-check"/></svg>با تأیید انسانی</span>
             </div>
           </div>
@@ -348,14 +356,18 @@
                   <div class="avatar agent-avatar"><svg class="ico" aria-hidden="true"><use href="#i-compass"/></svg></div>
                   <div class="message-bubble agent-bubble">
                     <p>سلام دانیال عزیز! من <strong>سُکان</strong>، همکار فنی و مهندس SRE اختصاصی شما روی پلتفرم لیارا هستم.</p>
-                    <p>نیازی نیست درگیر جزئیات پیچیده سرور و لینوکس شوید؛ فقط بگویید چه هدفی دارید تا کل فرآیند را هدایت کنم، بهترین پلن را محاسبه نمایم، و اگر مشکلی رخ داد به صورت خودکار ریشه‌یابی و رفع کنم.</p>
+                    <p>نیازی نیست درگیر جزئیات پیچیده سرور و لینوکس شوید؛ فقط بگویید چه هدفی دارید تا کل فرآیند را هدایت کنم، استقرار مستقیم را انجام دهم، و اگر مشکلی رخ داد به صورت خودکار ریشه‌یابی و رفع کنم.</p>
                     <div class="quick-chips">
-                      <button class="chip-btn" data-prompt="این پروژه رو تحلیل و دیپلوی کن"><svg class="ico" aria-hidden="true"><use href="#i-rocket"/></svg>تحلیل و اولین دیپلوی</button>
-                      <button class="chip-btn" data-prompt="سایتم خطای ۵۰۰ میده، بررسی کن"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg>عارضه‌یابی خطای ۵۰۰</button>
-                      <button class="chip-btn" data-prompt="سایت کند شده و مصرف رم بالاست"><svg class="ico" aria-hidden="true"><use href="#i-trending"/></svg>بررسی نشت حافظه و OOM</button>
-                      <button class="chip-btn" data-prompt="چطور دامنه ir از ایرنیک وصل کنم؟"><svg class="ico" aria-hidden="true"><use href="#i-globe"/></svg>راهنمای دامنه و ایرنیک</button>
-                      <button class="chip-btn" data-prompt="موجودی حسابم چقدره و چطور شارژ کنم؟"><svg class="ico" aria-hidden="true"><use href="#i-credit-card"/></svg>شارژ و امور مالی</button>
-                      <button class="chip-btn" data-prompt="اپلیکیشن رو حذف کن"><svg class="ico" aria-hidden="true"><use href="#i-shield-alert"/></svg>تست تأیید دومرحله‌ای L3</button>
+                      <button type="button" class="chip-btn" tabindex="0" data-prompt="این پروژه رو تحلیل و دیپلوی کن"><svg class="ico" aria-hidden="true"><use href="#i-rocket"/></svg>تحلیل و اولین دیپلوی</button>
+                      <button type="button" class="chip-btn" tabindex="0" data-prompt="سایتم خطای ۵۰۰ میده، بررسی کن"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg>عارضه‌یابی خطای ۵۰۰</button>
+                      <button type="button" class="chip-btn" tabindex="0" data-prompt="سایت کند شده و مصرف رم بالاست"><svg class="ico" aria-hidden="true"><use href="#i-trending"/></svg>بررسی نشت حافظه و OOM</button>
+                      <button type="button" class="chip-btn" tabindex="0" data-prompt="آزمون واکسیناسیون ابری و تاب‌آوری برنامه رو اجرا کن"><svg class="ico" aria-hidden="true"><use href="#i-shield-check"/></svg>واکسیناسیون ابری</button>
+                      <button type="button" class="chip-btn" tabindex="0" data-prompt="وضعیت سپر پیش‌دستانه امواج ترافیک و سرریز رم رو بررسی کن"><svg class="ico" aria-hidden="true"><use href="#i-zap"/></svg>سپر پیش‌دستانه امواج ترافیک</button>
+                      <button type="button" class="chip-btn" tabindex="0" data-prompt="وضعیت بهینه‌سازی خواب زمستانی و صرفه‌جویی ریالی کانتینر چطوره؟"><svg class="ico" aria-hidden="true"><use href="#i-credit-card"/></svg>خواب زمستانی ریالی</button>
+                      <button type="button" class="chip-btn" tabindex="0" data-prompt="گزارش کالبدشکافی و ریشه‌یابی این رخداد (Postmortem) رو تولید کن"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>کالبدشکافی (Postmortem)</button>
+                      <button type="button" class="chip-btn" tabindex="0" data-prompt="تریاژ هوشمند خطاهای لاگ بیلد استقرار رو نشون بده"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>تریاژ خطاهای بیلد</button>
+                      <button type="button" class="chip-btn" tabindex="0" data-prompt="چطور دامنه ir از ایرنیک وصل کنم؟"><svg class="ico" aria-hidden="true"><use href="#i-globe"/></svg>راهنمای دامنه و ایرنیک</button>
+                      <button type="button" class="chip-btn" tabindex="0" data-prompt="اپلیکیشن رو حذف کن"><svg class="ico" aria-hidden="true"><use href="#i-shield-alert"/></svg>تست تأیید دومرحله‌ای L3</button>
                     </div>
                   </div>
                 </div>
@@ -371,11 +383,11 @@
                     type="text" 
                     id="chatInput" 
                     class="chat-input" 
-                    placeholder="درخواست خود را به زبان فارسی بنویسید (مثلاً: این پروژه رو دیپلوی کن)..." 
+                    placeholder="از سُکان بپرسید (مثلاً: وضعیت رم یا دیپلوی)..." 
                     autocomplete="off"
                     aria-label="پیام به سُکان"
                   />
-                  <button type="submit" id="chatSendBtn" class="btn btn-primary send-btn">
+                  <button type="submit" id="chatSendBtn" class="btn btn-primary send-btn" aria-label="ارسال پیام">
                     <span>ارسال</span>
                     <svg class="ico send-icon" aria-hidden="true"><use href="#i-send"/></svg>
                   </button>
@@ -388,7 +400,10 @@
               <div class="tabs-header">
                 <button class="tab-btn active" data-tab="tab-incident">
                   <svg class="ico" aria-hidden="true"><use href="#i-stethoscope"/></svg><span>عارضه‌یابی SRE</span>
-                  <span id="tabIncidentBadge" class="tab-badge hidden">۱</span>
+                  <span id="tabIncidentBadge" class="tab-badge hidden">۰</span>
+                </button>
+                <button class="tab-btn" data-tab="tab-shields">
+                  <svg class="ico" aria-hidden="true"><use href="#i-shield-check"/></svg><span>سپرهای هوشمند و تاب‌آوری</span>
                 </button>
                 <button class="tab-btn" data-tab="tab-logs">
                   <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span>لاگ‌های زنده</span>
@@ -415,7 +430,110 @@
                   </div>
                 </div>
 
-                <!-- Tab 2: Live Log Stream & Build Pipeline (§8.4) -->
+                <!-- Tab 2: SRE Shields & Resilience Engine (§10, §Hackathon) -->
+                <div id="tab-shields" class="tab-pane">
+                  <div class="shields-grid">
+                    <!-- Shield 1: Predictive Wave Shield -->
+                    <div class="shield-card" id="cardPredictiveShield">
+                      <div class="shield-card-header">
+                        <div class="shield-title">
+                          <svg class="ico" aria-hidden="true"><use href="#i-trending"/></svg>
+                          <h4>سپر پیش‌دستانه امواج ترافیک و سرریز حافظه</h4>
+                        </div>
+                        <span class="badge badge-success" id="shieldRiskBadge">پایدار و ایمن</span>
+                      </div>
+                      <p class="shield-desc" id="shieldAlertText">وضعیت حافظه پایدار است؛ مصرف جاری در محدوده امن ۵۱۲ مگابایت قرار دارد.</p>
+                      <div class="shield-metrics-row">
+                        <div class="shield-metric-box">
+                          <span class="sm-label">شیب مصرف رم</span>
+                          <strong class="sm-val" id="shieldSlopeVal">۰.۰ MB/min</strong>
+                        </div>
+                        <div class="shield-metric-box">
+                          <span class="sm-label">زمان تا سرریز سقف</span>
+                          <strong class="sm-val" id="shieldTimeToOom">نامحدود (امن)</strong>
+                        </div>
+                        <div class="shield-metric-box">
+                          <span class="sm-label">الگوریتم پیش‌بینی</span>
+                          <strong class="sm-val" style="color: var(--mint);">رگرسیون خطی زنده</strong>
+                        </div>
+                      </div>
+                      <div class="shield-action-box" id="shieldActionBox">
+                        <svg class="ico" aria-hidden="true"><use href="#i-zap"/></svg>
+                        <span id="shieldActionText">نیازی به تغییر منابع نیست؛ مصرف حافظه در محدوده امن قرار دارد.</span>
+                      </div>
+                    </div>
+
+                    <!-- Shield 2: Chaos Vaccinator & Cloud Immunity -->
+                    <div class="shield-card" id="cardChaosVaccine">
+                      <div class="shield-card-header">
+                        <div class="shield-title">
+                          <svg class="ico" aria-hidden="true"><use href="#i-shield-check"/></svg>
+                          <h4>واکسیناسیون ابری و آزمون تاب‌آوری (Chaos Immunity)</h4>
+                        </div>
+                        <span class="badge badge-primary" id="chaosVerdictBadge">تاب‌آور (Resilient)</span>
+                      </div>
+                      <div class="chaos-score-container">
+                        <div class="chaos-score-circle">
+                          <span class="score-number" id="chaosScoreNum">۹۲</span>
+                          <span class="score-total">از ۱۰۰</span>
+                        </div>
+                        <div class="chaos-score-details">
+                          <p class="shield-desc" id="chaosAdviceText">پیکربندی استقرار برنامه توانایی جذب خطاهای پروب و تزریق اختلال‌های غیرمنتظره را دارد.</p>
+                          <div class="chaos-experiments-list" id="chaosExperimentsList">
+                            <div class="chaos-exp-item"><svg class="ico" style="color: var(--mint);" aria-hidden="true"><use href="#i-check"/></svg><span>آزمایش ناهمخوانی پورت: ایزوله‌سازی موفق پورت ۳۱۰۰</span></div>
+                            <div class="chaos-exp-item"><svg class="ico" style="color: var(--mint);" aria-hidden="true"><use href="#i-check"/></svg><span>آزمایش قطعی پایگاه‌داده: مدیریت صحیح خطای اتصال</span></div>
+                            <div class="chaos-exp-item"><svg class="ico" style="color: var(--mint);" aria-hidden="true"><use href="#i-check"/></svg><span>آزمایش موج بار ناگهانی: پاسخ‌دهی پایدار پروب‌های سلامت</span></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Shield 3: Zero-Waste Smart Rial Hibernation -->
+                    <div class="shield-card" id="cardHibernation">
+                      <div class="shield-card-header">
+                        <div class="shield-title">
+                          <svg class="ico" aria-hidden="true"><use href="#i-credit-card"/></svg>
+                          <h4>موتور خواب زمستانی ریالی (Zero-Waste Hibernation)</h4>
+                        </div>
+                        <span class="badge badge-success">صرفه‌جویی فعال</span>
+                      </div>
+                      <div class="shield-metrics-row">
+                        <div class="shield-metric-box">
+                          <span class="sm-label">صرفه‌جویی ماهانه برآوردشده</span>
+                          <strong class="sm-val" style="color: var(--mint);" id="hibernationSavingsVal">۵۵,۴۴۰ تومان</strong>
+                        </div>
+                        <div class="shield-metric-box">
+                          <span class="sm-label">درصد کاهش هزینه</span>
+                          <strong class="sm-val" style="color: var(--mint);" id="hibernationPercentVal">۳۵٪ کل پلن</strong>
+                        </div>
+                        <div class="shield-metric-box">
+                          <span class="sm-label">تأخیر بیداری (Wake-up SLA)</span>
+                          <strong class="sm-val">&lt; ۴ ثانیه</strong>
+                        </div>
+                      </div>
+                      <p class="shield-desc" style="margin-top: 0.5rem;">با کاهش ترافیک در ساعات خلوت، کانتینر به حالت Sleep کم‌مصرف رفته و با دریافت اولین بسته HTTP در کمتر از ۴ ثانیه بدون وقفه بیدار می‌شود.</p>
+                    </div>
+
+                    <!-- Shield 4: 1-Click Postmortem Generator -->
+                    <div class="shield-card" id="cardPostmortem">
+                      <div class="shield-card-header">
+                        <div class="shield-title">
+                          <svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>
+                          <h4>کالبدشکافی رخداد و گزارش SRE (1-Click Postmortem)</h4>
+                        </div>
+                        <button type="button" class="btn btn-outline btn-sm" id="btnGenPostmortem" onclick="generateAndShowPostmortem()">
+                          <svg class="ico" aria-hidden="true"><use href="#i-file"/></svg><span>تولید گزارش کالبدشکافی</span>
+                        </button>
+                      </div>
+                      <p class="shield-desc">تولید خودکار سند استاندارد پس از حادثه مطابق فرمت رسمی مهندسی SRE شامل تایم‌لاین، علل ریشه‌ای، تحلیل TTL و چک‌لیست پیشگیری.</p>
+                      <div id="postmortemOutputArea" class="hidden" style="margin-top: 0.75rem;">
+                        <pre class="fix-brief-pre" id="postmortemPreText" style="max-height: 250px; overflow-y: auto;"></pre>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Tab 3: Live Log Stream & Build Pipeline (§8.4) -->
                 <div id="tab-logs" class="tab-pane">
                   <!-- Build Steps Timeline (§8.4, §12.1) -->
                   <div class="build-pipeline-stepper pipeline-steps" id="buildPipelineStepper">
@@ -497,8 +615,8 @@
                   <div class="scenario-grid">
                     <div class="scenario-card">
                       <div class="scenario-badge badge-p0">سناریو ۱ · ضروری</div>
-                      <h4><svg class="ico" aria-hidden="true"><use href="#i-rocket"/></svg>اولین دیپلوی و پیشنهاد پلن</h4>
-                      <p>تحلیل سورس کد فروشگاه، محاسبه ۳ پلن متناسب با رم پایه، ساخت خودکار <code>liara.json</code> و ارائه کارت تأیید استقرار.</p>
+                      <h4><svg class="ico" aria-hidden="true"><use href="#i-rocket"/></svg>اولین دیپلوی خودکار</h4>
+                      <p>تحلیل خودکار سورس‌کد فروشگاه، ساخت فایل <code>liara.json</code> و ارائه کارت تأیید استقرار سریع.</p>
                       <button class="btn btn-primary" onclick="runScenario('deploy')">اجرای سناریو ۱</button>
                     </div>
 
@@ -535,6 +653,34 @@
                       <h4><svg class="ico" aria-hidden="true"><use href="#i-key"/></svg>رد توکن دستکاری‌شده</h4>
                       <p>اعتبارسنجی امضای HMAC با پارامتر تغییریافته و دریافت خطای <code>PARAM_MISMATCH</code>.</p>
                       <button class="btn btn-outline" onclick="runScenario('tamper')">تست دستکاری توکن</button>
+                    </div>
+
+                    <div class="scenario-card">
+                      <div class="scenario-badge badge-p0">آزمون تاب‌آوری ابری</div>
+                      <h4><svg class="ico" aria-hidden="true"><use href="#i-shield-check"/></svg>واکسیناسیون هرج‌ومرج و نمره ایمنی</h4>
+                      <p>اجرای ۳ آزمایش تزریق اختلال روی پورت، قطعی دیتابیس و نوسان بار، و ارزیابی امتیاز تاب‌آوری از ۱۰۰.</p>
+                      <button class="btn btn-outline" onclick="runScenario('chaos')">اجرای واکسیناسیون</button>
+                    </div>
+
+                    <div class="scenario-card">
+                      <div class="scenario-badge badge-warning">تحلیل سری زمانی</div>
+                      <h4><svg class="ico" aria-hidden="true"><use href="#i-trending"/></svg>سپر پیش‌دستانه امواج ترافیک</h4>
+                      <p>محاسبه شیب مصرف حافظه با رگرسیون خطی و پیش‌بینی زمان برخورد با سقف پلن قبل از وقوع بحران OOM.</p>
+                      <button class="btn btn-outline" onclick="runScenario('predictive')">ارزیابی سپر پیش‌دستانه</button>
+                    </div>
+
+                    <div class="scenario-card">
+                      <div class="scenario-badge badge-p0">بهینه‌سازی هزینه</div>
+                      <h4><svg class="ico" aria-hidden="true"><use href="#i-credit-card"/></svg>موتور خواب زمستانی ریالی</h4>
+                      <p>محاسبه صرفه‌جویی اقتصادی (تا ۳۵٪) در ساعات کم‌ترافیک و بررسی آمادگی بیداری کانتینر زیر ۴ ثانیه.</p>
+                      <button class="btn btn-outline" onclick="runScenario('hibernation')">محاسبه خواب ریالی</button>
+                    </div>
+
+                    <div class="scenario-card">
+                      <div class="scenario-badge badge-danger">تریاژ بیلد</div>
+                      <h4><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>تریاژ خطاهای لاگ بیلد استقرار</h4>
+                      <p>تحلیل لاگ خطای npm و استخراج ریشه تعارض وابستگی‌ها به همراه پیشنهاد مستقیم اصلاح دستور بیلد.</p>
+                      <button class="btn btn-outline" onclick="runScenario('buildtriage')">تریاژ خطای بیلد</button>
                     </div>
                   </div>
                 </div>
