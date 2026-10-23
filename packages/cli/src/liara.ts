@@ -112,13 +112,15 @@ export function threePlanOptions(candidates: PlanSummary[]): { options: PlanSumm
     candidates.length <= 3
       ? candidates
       : [candidates[0], candidates[Math.floor((candidates.length - 1) / 2)], candidates[candidates.length - 1]];
-  const found = options.findIndex((p) => p.planID !== "free" && (p.ram ?? 0) >= 1);
+  // PlanSummary.ram is in MB; recommend the first plan with at least 1 GB.
+  const found = options.findIndex((p) => p.planID !== "free" && (p.ram ?? 0) >= 1024);
   return { options, recommended: found >= 0 ? found : Math.min(1, options.length - 1) };
 }
 
 export function planLabel(plan: PlanSummary): string {
   if (plan.planID === "free") return "رایگان (محدود)";
-  const ram = plan.ram !== undefined ? `${fa(plan.ram)} گیگ رم` : "";
+  const ram =
+    plan.ram === undefined ? "" : plan.ram >= 1024 ? `${fa(plan.ram / 1024)} گیگ رم` : `${fa(plan.ram)} مگ رم`;
   const cpu = plan.cpu !== undefined ? `${fa(plan.cpu)} هسته` : "";
   return [ram, cpu].filter(Boolean).join("، ") || plan.planID;
 }

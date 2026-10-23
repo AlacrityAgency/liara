@@ -260,7 +260,7 @@ describe("sokan CLI: deploy", () => {
     assert.strictEqual(created.bundlePlanID, "standard", "cheapest valid bundle for the plan");
     assert.strictEqual(created.platform, "node");
     assert.deepStrictEqual(reqs[envAt].body.variables, [{ key: "DATABASE_URL", value: DB_URL }]);
-    assert.deepStrictEqual(reqs[releaseAt].body, { sourceID: "src_1", port: 3100, type: "node" });
+    assert.deepStrictEqual(reqs[releaseAt].body, { sourceID: "src_1", port: 3100, type: "node", envs: { DATABASE_URL: DB_URL } });
 
     const credentials = path.join(home, ".sokan", "credentials.json");
     assert.strictEqual(fs.statSync(credentials).mode & 0o777, 0o600);
@@ -391,5 +391,19 @@ describe("sokan CLI: status, logs, domain, mcp", () => {
   it("mcp starts the stdio server and exits when its input closes", async () => {
     const res = await runCli(["mcp"], { cwd: ROOT, env: { PATH: process.env.PATH, HOME: os.tmpdir(), SOKAN_HOME: tempDir("sokan-home-") } });
     assert.strictEqual(res.code, 0, res.stdout + res.stderr);
+  });
+});
+
+describe("CLI plan labels use MB from the client", () => {
+  const { planLabel, threePlanOptions } = require("../build/cli/src/liara.js");
+  it("prints GB for >=1024 MB and MB below, and recommends the first >=1 GB plan", () => {
+    assert.match(planLabel({ planID: "g2-m", ram: 1024, cpu: 1 }), /۱ گیگ رم/);
+    assert.match(planLabel({ planID: "g2-s", ram: 512, cpu: 0.5 }), /۵۱۲ مگ رم/);
+    const opts = [
+      { planID: "g2-s", ram: 512, monthlyPrice: 1 },
+      { planID: "g2-m", ram: 1024, monthlyPrice: 2 },
+      { planID: "g2-l", ram: 2048, monthlyPrice: 3 },
+    ];
+    assert.strictEqual(threePlanOptions(opts).recommended, 1);
   });
 });

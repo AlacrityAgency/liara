@@ -270,6 +270,7 @@ export async function runDeploy(ctx: Ctx): Promise<number> {
   const result = await client.deploy(name, ctx.dir, {
     port: profile.detectedPort,
     platform: profile.detectedPlatform,
+    envs: variables.length > 0 ? envs : undefined,
     onEvent: progressHandler(progress, lines),
   });
   progress.done();
