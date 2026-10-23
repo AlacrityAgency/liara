@@ -594,7 +594,7 @@ describe("Fix Brief (WHITEPAPER §9.2)", () => {
     assert.ok(brief.reproduction.startsWith("curl -i https://chaos-shop.liara.run/api/items"), brief.reproduction);
     assert.ok(brief.acceptance.length >= 1);
     assert.ok(brief.acceptance.some((a) => a.test.includes("/api/items")));
-    assert.strictEqual(brief.deploy_back, "sokan_deploy");
+    assert.strictEqual(brief.deploy_back, "deploy", "the real tool name, not sokan_deploy (round 3 item 5)");
     assert.ok(brief.suggested_change.includes("متغیر"));
     assert.deepStrictEqual(brief.suspected_locations[0], { file: "src/routes/items.js", line: 42, frame: "src/routes/items.js:42" });
   });
@@ -639,7 +639,8 @@ describe("Fix Brief (WHITEPAPER §9.2)", () => {
     assert.ok(md.startsWith("# Fix Brief"));
     assert.ok(md.includes("## Acceptance"));
     assert.ok(md.includes("curl -i https://chaos-shop.liara.run/api/items"));
-    assert.ok(md.includes("sokan_deploy"));
+    assert.ok(md.includes("`deploy`"), "the handoff names the real deploy tool");
+    assert.ok(!md.includes("sokan_deploy"));
   });
 
   it("gives each runbook its own suggested change text", () => {
@@ -933,9 +934,12 @@ describe("R5: verification discriminates (port, leak, CPU under load)", () => {
     const criteria = [{ kind: "probe_not_5xx", path: "/" }];
     assert.strictEqual(verify(before, down, criteria).passed, false, "502 from the proxy is not success");
     assert.strictEqual(verify(before, refused, criteria).passed, false, "status 0 is not success");
-    const ok = verify(before, up404, criteria);
-    assert.strictEqual(ok.passed, true, "a 404 means the app answers");
+    assert.strictEqual(verify(before, up404, criteria).passed, false, "a 404 is not healthy unless allow4xx is set (round 3 item 4)");
+    const portCriterion = { ...criteria[0], allow4xx: true };
+    const ok = verify(before, up404, [portCriterion]);
+    assert.strictEqual(ok.passed, true, "a 404 with allow4xx means the app answers");
     assert.strictEqual(ok.outcome, "resolved");
+    assert.strictEqual(rb.remediations[0].successCriteria.allow4xx, true, "the port runbook opts in to 4xx");
   });
 
   it("a restart for a leak is verified as mitigated, and the text points to the Fix Brief", () => {
@@ -1037,5 +1041,200 @@ describe("R9: patterns and golden top hypotheses", () => {
     assert.strictEqual(incident.status, "diagnosed");
     const brief = createFixBrief(incident, ev({ logs: [L(0, "FATAL: widget registry corrupted (code W-17)", 5)] }), (t) => t);
     assert.ok(brief.evidence.length > 0, "the Fix Brief carries the error excerpt");
+  });
+});
+
+// ---------- round 3 (EVALUATION §6): unclassified fallback, signal data, log-only OOM ----------
+
+describe("R3.1 Unclassified fallback catches repeated failure lines, not only 'error' lines", () => {
+  const STRIPE = "Stripe webhook signature verification failed";
+
+  it("3x Stripe webhook failure gives hyp_unclassified_errors, and the Fix Brief quotes the repeated line", () => {
+    const logs = [L(1, STRIPE, 1), L(2, STRIPE, 1), L(3, STRIPE, 1)];
+    const data = ev({ logs, probes: [P(3, "/webhooks/stripe", 400)] });
+    const incident = DiagnosticEngine.diagnose(data, "وبهوک خطا می‌دهد");
+    const h = incident.hypotheses[0];
+    assert.strictEqual(h.id, "hyp_unclassified_errors", tops(incident).join(", "));
+    assert.strictEqual(h.confidence, "low");
+    assert.deepStrictEqual(h.remediations.map((r) => r.action), ["coding_agent_handoff"]);
+    assert.strictEqual(incident.status, "diagnosed", "a handoff never creates an approval card");
+    const brief = DiagnosticEngine.createFixBrief(incident, data, (t) => t);
+    assert.ok(brief.evidence.some((e) => (e.text ?? "").includes(STRIPE) && e.text.includes("3 occurrences")),
+      JSON.stringify(brief.evidence));
+    assert.ok(brief.acceptance.some((a) => a.test.includes(STRIPE)), "the acceptance check names the repeated line");
+  });
+
+  it("a Persian failure line and English failure words each give the unclassified hypothesis", () => {
+    for (const text of [
+      "پرداخت ناموفق بود",
+      "درخواست با خطا مواجه شد",
+      "Access denied for user reporter",
+      "Token rejected by the verifier",
+      "Request forbidden by policy",
+    ]) {
+      const incident = DiagnosticEngine.diagnose(ev({ logs: [L(1, text, 1), L(1, text, 2)] }), "خطا");
+      assert.strictEqual(incident.hypotheses[0]?.id, "hyp_unclassified_errors", text);
+    }
+  });
+
+  it("a 5xx access line counts on its own", () => {
+    const logs = [L(1, '10.0.0.5 - - "GET /api/orders HTTP/1.1" 503 512', 1)];
+    const incident = DiagnosticEngine.diagnose(ev({ logs }), "سایت بالا نمی‌آید");
+    assert.strictEqual(incident.hypotheses[0]?.id, "hyp_unclassified_errors", tops(incident).join(", "));
+  });
+
+  it("a 4xx access line alone is not a failure, but a repeated and rising one is (5 or more hits)", () => {
+    const line = (min) => L(min, '10.0.0.5 - - "GET /old-page HTTP/1.1" 404 90', 0);
+    const flat = DiagnosticEngine.diagnose(ev({ logs: [0, 2, 4, 6, 8].map(line) }), "خطا");
+    assert.strictEqual(flat.hypotheses.length, 0, "steady 404s are noise");
+    const rising = DiagnosticEngine.diagnose(ev({ logs: [0, 5, 6, 7, 8, 9].map(line) }), "خطا");
+    assert.strictEqual(rising.hypotheses[0]?.id, "hyp_unclassified_errors", tops(rising).join(", "));
+    const few = DiagnosticEngine.diagnose(ev({ logs: [5, 6, 7, 8].map(line) }), "خطا");
+    assert.strictEqual(few.hypotheses.length, 0, "fewer than 5 hits do not count");
+  });
+
+  it("a plain informational line gives no hypothesis", () => {
+    const incident = DiagnosticEngine.diagnose(ev({ logs: [L(1, "server started and ready", 1)] }), "خطا");
+    assert.strictEqual(incident.hypotheses.length, 0);
+  });
+
+  it("no_error_signature passes once the repeated line is gone, and fails while it is still there", () => {
+    const logs = [L(1, "Stripe webhook signature verification failed", 1), L(2, "Stripe webhook signature verification failed", 1)];
+    const data = ev({ logs });
+    const incident = DiagnosticEngine.diagnose(data, "خطا");
+    const criterion = incident.hypotheses[0].remediations[0].successCriteria;
+    const before = takeSnapshot(data);
+    assert.strictEqual(verify(before, takeSnapshot(data), [criterion]).passed, false);
+    assert.strictEqual(verify(before, takeSnapshot(ev({ logs: [] })), [criterion]).passed, true);
+  });
+});
+
+describe("R3.2 Signals carry structured data (the shape the UI sentences read)", () => {
+  it("MISSING_ENV carries the variable name", () => {
+    const { signals } = extractSignals(GOLDEN[0].evidence);
+    assert.strictEqual(signals.find((s) => s.kind === "MISSING_ENV").data.variable, "DATABASE_URL");
+  });
+
+  it("PORT_MISMATCH carries listenPort and expectedPort, and the port runbook exposes it as primarySignal", () => {
+    const data = ev({ logs: [L(0, "Server listening on port 3100", 1)] });
+    const { signals } = extractSignals(data);
+    const sig = signals.find((s) => s.kind === "PORT_MISMATCH");
+    assert.deepStrictEqual({ listenPort: sig.data.listenPort, expectedPort: sig.data.expectedPort }, { listenPort: 3100, expectedPort: 3000 });
+    const incident = DiagnosticEngine.diagnose(data, "پورت");
+    const top = incident.hypotheses[0];
+    assert.strictEqual(top.id, "hyp_port_mismatch", tops(incident).join(", "));
+    assert.strictEqual(top.primarySignal.kind, "PORT_MISMATCH");
+    assert.strictEqual(top.primarySignal.data.listenPort, 3100);
+    assert.strictEqual(top.remediations[0].params.port, 3100, "the card uses the logged port");
+  });
+
+  it("MEMORY_PRESSURE carries pct, rssMB and limitMB as numbers", () => {
+    const data = ev({ memory: memSeries([470, 480, 490, 500, 505, 510]), app: { name: "chaos-shop", port: 3000, envKeys: [], scale: 1, memoryLimitMB: 512 } });
+    const sig = extractSignals(data).signals.find((s) => s.kind === "MEMORY_PRESSURE");
+    assert.ok(sig, "pressure fires at p95 >= 85%");
+    assert.strictEqual(sig.data.limitMB, 512);
+    assert.strictEqual(sig.data.rssMB, 510);
+    assert.ok(sig.data.pct >= 85 && sig.data.pct <= 100, String(sig.data.pct));
+  });
+
+  it("MEMORY_LEAK_TREND carries pct, rssMB, limitMB and the slope", () => {
+    const data = ev({ memory: memSeries([100, 120, 140, 160, 180, 200, 220, 240]), app: { name: "chaos-shop", port: 3000, envKeys: [], scale: 1, memoryLimitMB: 512 } });
+    const sig = extractSignals(data).signals.find((s) => s.kind === "MEMORY_LEAK_TREND");
+    assert.ok(sig, "a steady rise is a leak trend");
+    for (const key of ["pct", "rssMB", "limitMB", "slopeMBPerMin"]) assert.strictEqual(typeof sig.data[key], "number", key);
+    assert.strictEqual(sig.data.rssMB, 240);
+    assert.strictEqual(sig.data.pct, Math.round((240 / 512) * 100));
+  });
+
+  it("UPSTREAM_SLOW carries the host and the p95 latency from the printed milliseconds", () => {
+    const data = ev({
+      logs: [
+        L(1, "upstream timeout after 2000ms: POST https://api.payment.example/v1/charge", 1),
+        L(1, "upstream timeout after 2000ms: GET https://api.payment.example/v1/rates", 2),
+      ],
+    });
+    const sig = extractSignals(data).signals.find((s) => s.kind === "UPSTREAM_SLOW");
+    assert.strictEqual(sig.data.host, "api.payment.example");
+    assert.strictEqual(sig.data.p95Ms, 2000);
+  });
+
+  it("DB_UNREACHABLE carries host and port, and never the password from the URL", () => {
+    const data = ev({ logs: [L(1, "Error: connect ECONNREFUSED postgres://admin:superSecret123@db:5432/main", 1)] });
+    const sig = extractSignals(data).signals.find((s) => s.kind === "DB_UNREACHABLE");
+    assert.strictEqual(sig.data.host, "db");
+    assert.strictEqual(sig.data.port, 5432);
+    assert.ok(!JSON.stringify(sig.data).includes("superSecret123"));
+  });
+
+  it("CACHE_UNREACHABLE carries host and the Redis port", () => {
+    const data = ev({ logs: [L(1, "Error: Redis connection to cache-01:6379 failed: connect ECONNREFUSED", 1)] });
+    const sig = extractSignals(data).signals.find((s) => s.kind === "CACHE_UNREACHABLE");
+    assert.strictEqual(sig.data.host, "cache-01");
+    assert.strictEqual(sig.data.port, 6379);
+  });
+
+  it("OOM_KILLED carries limitMB and says whether a memory series was seen", () => {
+    const data = ev({ logs: [L(1, "FATAL ERROR: JavaScript heap out of memory", 5)], applets: [{ state: "stopped", reason: "OOMKilled", restarts: 1 }] });
+    const sig = extractSignals(data).signals.find((s) => s.kind === "OOM_KILLED");
+    assert.strictEqual(sig.data.limitMB, 512);
+    assert.strictEqual(sig.data.hasMemorySeries, false);
+  });
+
+  it("the unclassified hypothesis has primarySignal null, because no signal supports it", () => {
+    const incident = DiagnosticEngine.diagnose(ev({ logs: [L(1, "FATAL: widget registry corrupted", 1), L(1, "FATAL: widget registry corrupted", 2)] }), "خطا");
+    assert.strictEqual(incident.hypotheses[0].primarySignal, null);
+  });
+});
+
+describe("R3.3 Log-only OOM: leak and undersized plan cannot be told apart", () => {
+  const logOnly = () => ev({
+    logs: [L(1, "FATAL ERROR: JavaScript heap out of memory", 5)],
+    applets: [{ state: "stopped", reason: "OOMKilled", restarts: 1 }],
+    memory: [],
+  });
+
+  it("the top hypothesis says leak and plan size cannot be separated, is capped below high, and restarts first", () => {
+    const incident = DiagnosticEngine.diagnose(logOnly(), "سایتم مشکل داره");
+    const top = incident.hypotheses[0];
+    assert.strictEqual(top.id, "hyp_undersized_plan", tops(incident).join(", "));
+    assert.match(top.explain_fa, /نمی‌توان نشت حافظه را از پلن کوچک تشخیص داد/);
+    assert.notStrictEqual(top.confidence, "high");
+    assert.ok(top.missingEvidence.includes("metrics_memory"));
+    assert.ok(incident.missingEvidence.includes("metrics_memory"), "the missing memory history is reported");
+    assert.deepStrictEqual(top.remediations.map((r) => r.action), ["app_restart", "app_resize_plan"]);
+    assert.strictEqual(top.remediations[0].riskLevel, "L2");
+    assert.strictEqual(top.remediations[0].cost_fa, "بدون هزینه؛ حدود ۱۰ ثانیه قطعی");
+    assert.match(top.confirming_test, /ری‌استارت.*مشاهده/);
+  });
+
+  it("the restart from this path is mitigation-only, so its pass reads mitigated", () => {
+    assert.strictEqual(isMitigationOnlyRemediation("undersized_plan", "app_restart"), true);
+    assert.strictEqual(isMitigationOnlyRemediation("undersized_plan", "app_resize_plan"), false);
+  });
+
+  it("with a memory series the uncertainty text is absent and the resize stays the only remediation", () => {
+    const withSeries = ev({
+      logs: [L(1, "FATAL ERROR: JavaScript heap out of memory", 5)],
+      applets: [{ state: "stopped", reason: "OOMKilled", restarts: 1 }],
+      memory: memSeries([300, 302, 299, 301, 300, 302, 300, 301]),
+    });
+    const incident = DiagnosticEngine.diagnose(withSeries, "سایتم مشکل داره");
+    const undersized = incident.hypotheses.find((h) => h.runbookId === "undersized_plan");
+    if (undersized) {
+      assert.doesNotMatch(undersized.explain_fa, /نمی‌توان نشت حافظه را از پلن کوچک تشخیص داد/);
+      assert.ok(!undersized.remediations.some((r) => r.action === "app_restart" && r.label_fa.includes("گام اول")));
+    }
+    assert.ok(!incident.missingEvidence.includes("metrics_memory"));
+  });
+});
+
+describe("R3.4 probe_not_5xx is healthy only on 2xx and 3xx by default", () => {
+  it("describeCriterion words the check as 2xx or 3xx", () => {
+    const brief = DiagnosticEngine.createFixBrief(
+      DiagnosticEngine.diagnose(GOLDEN[0].evidence, SYMPTOM),
+      GOLDEN[0].evidence,
+      (t) => t
+    );
+    assert.ok(brief.acceptance.every((a) => !/below 500/.test(a.test)));
   });
 });

@@ -55,7 +55,7 @@ export interface InstructionFlag {
 export type SuccessCriterion =
   | { kind: "probe_ok"; path: string }
   /** Any answer below 500 means the app is reachable through the proxy (port and proxy problems). Status 0 or null fails. */
-  | { kind: "probe_not_5xx"; path: string }
+  | { kind: "probe_not_5xx"; path: string; allow4xx?: boolean }
   | { kind: "probe_latency_below"; path: string; ms: number }
   | { kind: "no_error_signature"; signature: string }
   | { kind: "error_rate_below"; perMin: number }

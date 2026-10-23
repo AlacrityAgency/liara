@@ -1,16 +1,15 @@
 import type {
-  Incident, Hypothesis, FixBrief, Snapshot, Signal, IncidentStatus, Remediation, EvidenceRef, SuccessCriterion,
+  Incident, FixBrief, Snapshot, Signal, Remediation, EvidenceRef, SuccessCriterion,
 } from "@sokan/contracts";
-import type { CollectedEvidence, DiagIncidentStatus, DiagSignalKind } from "./types";
+import type { CollectedEvidence, DiagHypothesis, DiagIncidentStatus, DiagSignalKind, PrimarySignal } from "./types";
 import { extractSignals, errorOnset } from "./extractors";
 import { flagInstructions } from "./flags";
-import { STANDARD_RUNBOOKS } from "./runbooks";
+import { STANDARD_RUNBOOKS, type DiagnosticRunbook } from "./runbooks";
 import { scoreRunbook, type ScoredRunbook } from "./scoring";
 import { createFixBrief as buildFixBrief, type Redactor } from "./brief";
 import { failingPathsFromEvidence, takeSnapshot as takeVerifySnapshot } from "./verifier";
 import { percentile } from "./stats";
-import { clusterErrors } from "./logparse";
-import { isErrorLine } from "./patterns";
+import { clusterErrors, clusterFailureLines } from "./logparse";
 
 const DEFAULT_SYMPTOM = "خطا یا کندی در سرویس";
 const MAX_HYPOTHESES = 3;
@@ -39,8 +38,8 @@ function placeholderContext(data: CollectedEvidence, byKind: ReadonlyMap<DiagSig
     failingPath: failingPathsFromEvidence(data)[0] ?? "/",
     poolSignature: "connection",
   };
-  const mismatch = byKind.get("PORT_MISMATCH")?.data?.listenedPort;
-  if (mismatch !== undefined && mismatch !== null) ctx.listenedPort = String(mismatch);
+  const listenPort = byKind.get("PORT_MISMATCH")?.data?.listenPort;
+  if (listenPort !== undefined && listenPort !== null) ctx.listenedPort = String(listenPort);
   const pool = byKind.get("DB_POOL_EXHAUSTED")?.data?.pattern;
   if (typeof pool === "string") ctx.poolSignature = pool;
   return ctx;
@@ -48,9 +47,33 @@ function placeholderContext(data: CollectedEvidence, byKind: ReadonlyMap<DiagSig
 
 const unique = (xs: string[]): string[] => Array.from(new Set(xs));
 
-function toHypothesis(s: ScoredRunbook, ctx: Record<string, string>): Hypothesis {
+/**
+ * The supporting signal that contributes most to the runbook's score (weight * strength), with its structured facts.
+ * Required signals are candidates too, so an applicable runbook always names its primary signal.
+ */
+function primarySignalOf(rb: DiagnosticRunbook, byKind: ReadonlyMap<DiagSignalKind, Signal>): PrimarySignal | null {
+  const kinds = [...Object.keys(rb.weights), ...rb.requiredSignals, ...(rb.requiredAny ?? [])] as DiagSignalKind[];
+  let best: { sig: Signal; contribution: number } | null = null;
+  for (const kind of kinds) {
+    const sig = byKind.get(kind);
+    if (!sig) continue;
+    const contribution = ((rb.weights[kind] ?? 0) * (sig.strength ?? 0.5)) || 0;
+    if (!best || contribution > best.contribution) best = { sig, contribution };
+  }
+  return best ? { kind: best.sig.kind, data: best.sig.data ?? {} } : null;
+}
+
+/**
+ * Said when the only OOM evidence is a log line or an applet state, with no memory series (EVALUATION round 3, item 3).
+ * Leak and undersized plan then look the same, so the confidence is capped and observation comes first.
+ */
+const LOG_ONLY_OOM_UNCERTAINTY_FA =
+  "فقط با رخداد OOM و بدون تاریخچه‌ی حافظه نمی‌توان نشت حافظه را از پلن کوچک تشخیص داد؛ هر دو یک‌جور دیده می‌شوند.";
+
+function toHypothesis(s: ScoredRunbook, ctx: Record<string, string>, byKind: ReadonlyMap<DiagSignalKind, Signal>, logOnlyOom: boolean): DiagHypothesis {
   const rb = s.runbook;
-  const remediations: Remediation[] = rb.remediations.map((r, i) => ({
+  const uncertain = logOnlyOom && rb.logOnlyOom ? rb.logOnlyOom : null;
+  const remediations: Remediation[] = [...(uncertain?.prepend ?? []), ...rb.remediations].map((r, i) => ({
     id: `rem_${rb.id}_${i}`,
     action: r.tool,
     params: resolveTemplate(r.params_template, ctx),
@@ -60,44 +83,45 @@ function toHypothesis(s: ScoredRunbook, ctx: Record<string, string>): Hypothesis
     cost_fa: r.cost_fa,
     impact_fa: r.impact_fa,
     rollback_fa: r.rollback_fa,
-    // probe_not_5xx and underLoad are diagnostics-only extensions; see types.ts.
+    // probe_not_5xx's allow4xx and underLoad are diagnostics-only extensions; see types.ts.
     successCriteria: resolveTemplate(r.successCriteria, ctx) as SuccessCriterion,
   }));
   return {
     id: `hyp_${rb.id}`,
     runbookId: rb.id,
     title_fa: rb.title_fa,
-    explain_fa: rb.explain_fa,
+    explain_fa: uncertain ? `${LOG_ONLY_OOM_UNCERTAINTY_FA} ${rb.explain_fa}` : rb.explain_fa,
     confidence: s.confidence,
     score: Math.round(s.score * 1000) / 1000,
     logit: Math.round(s.logit * 1000) / 1000,
     evidence_for: unique(s.supporting.flatMap((x) => x.evidence)),
     evidence_against: unique(s.contradicting.flatMap((x) => x.evidence)),
-    confirming_test: rb.confirmingTest_fa,
+    confirming_test: uncertain ? uncertain.confirmingTest_fa : rb.confirmingTest_fa,
     remediations,
+    primarySignal: primarySignalOf(rb, byKind),
     ...(s.cappedBy.length > 0 ? { missingEvidence: s.cappedBy } : {}),
   };
 }
 
 /**
- * Used when error lines exist but no runbook matched (EVALUATION R9). The top error cluster becomes the evidence,
- * and the only remediation is a Fix Brief for the Coding Agent, so no approval card is created.
+ * Used when failure lines exist but no runbook matched (EVALUATION R9, round 3 item 1). The top cluster becomes the
+ * evidence. Stack-trace clusters come first, then repeated failure lines. The only remediation is a Fix Brief for
+ * the Coding Agent, so no approval card is created.
  */
-function unclassifiedHypothesis(data: CollectedEvidence, evidence: EvidenceRef[]): Hypothesis | null {
+function unclassifiedHypothesis(data: CollectedEvidence, evidence: EvidenceRef[]): DiagHypothesis | null {
   const logs = data.logs ?? [];
-  const errorLines = logs.filter((l) => isErrorLine(l.text));
-  if (errorLines.length === 0) return null;
-  const top = clusterErrors(logs)[0];
-  const summary = top
-    ? `Exception cluster: ${top.signature} (count: ${top.count})`
-    : `Error line: ${errorLines[0].text.slice(0, 140)}`;
+  const top = clusterErrors(logs)[0] ?? clusterFailureLines(logs)[0];
+  if (!top) return null;
+  const summary = top.runtime === "generic"
+    ? `Failure cluster: ${top.message} (count: ${top.count})`
+    : `Exception cluster: ${top.signature} (count: ${top.count})`;
   const id = `ev_${evidence.length + 1}`;
-  evidence.push({ id, type: "log", ts: top?.firstTs ?? errorLines[0].ts, summary, raw_ref: top?.sampleIds[0] ?? errorLines[0].id });
-  const signature = (top ? top.errorType : errorLines[0].text).trim().slice(0, 60);
+  evidence.push({ id, type: "log", ts: top.firstTs, summary, raw_ref: top.sampleIds[0] });
+  const signature = (top.runtime === "generic" ? top.signature : top.errorType).trim().slice(0, 60);
   return {
     id: "hyp_unclassified_errors",
     title_fa: "خطای دسته‌بندی‌نشده در لاگ",
-    explain_fa: "در لاگ خطا دیده می‌شود، اما با هیچ الگوی شناخته‌شده تطبیق نیافت. Fix Brief با خطای پرتکرار ساخته شد تا کد بررسی شود.",
+    explain_fa: "در لاگ خطا یا شکست تکرارشونده دیده می‌شود، اما با هیچ الگوی شناخته‌شده تطبیق نیافت. Fix Brief با خطای پرتکرار ساخته شد تا کد بررسی شود.",
     confidence: "low",
     score: 0.3,
     evidence_for: [id],
@@ -115,6 +139,7 @@ function unclassifiedHypothesis(data: CollectedEvidence, evidence: EvidenceRef[]
       rollback_fa: "—",
       successCriteria: { kind: "no_error_signature", signature },
     }],
+    primarySignal: null,
   };
 }
 
@@ -124,11 +149,18 @@ export class DiagnosticEngine {
    * Evidence -> Signals (with strength) -> Instruction flags -> Weighted runbook scoring -> Incident.
    */
   public static diagnose(evidenceData: CollectedEvidence, symptom = DEFAULT_SYMPTOM): Incident {
-    const { signals, evidence, missingEvidence } = extractSignals(evidenceData);
+    const extracted = extractSignals(evidenceData);
+    const { signals, evidence } = extracted;
     const flags = flagInstructions(evidenceData.logs ?? []);
 
     const byKind = new Map<DiagSignalKind, Signal>();
     for (const s of signals) if (!byKind.has(s.kind)) byKind.set(s.kind, s);
+
+    // OOM without a memory series: the memory collector counts as missing for scoring, which caps confidence.
+    const logOnlyOom = byKind.has("OOM_KILLED") && byKind.get("OOM_KILLED")?.data?.hasMemorySeries !== true;
+    const missingEvidence = logOnlyOom && !extracted.missingEvidence.includes("metrics_memory")
+      ? [...extracted.missingEvidence, "metrics_memory"]
+      : extracted.missingEvidence;
 
     const onsetIso = evidenceData.symptomStart ?? errorOnset(evidenceData);
     const scored = STANDARD_RUNBOOKS.map((rb) =>
@@ -144,11 +176,11 @@ export class DiagnosticEngine {
       }));
 
     const ctx = placeholderContext(evidenceData, byKind);
-    const hypotheses = applicable
+    const hypotheses: DiagHypothesis[] = applicable
       .filter((s) => !s.rejected)
       .sort((a, b) => b.score - a.score)
       .slice(0, MAX_HYPOTHESES)
-      .map((s) => toHypothesis(s, ctx));
+      .map((s) => toHypothesis(s, ctx, byKind, logOnlyOom));
 
     if (hypotheses.length === 0) {
       const unclassified = unclassifiedHypothesis(evidenceData, evidence);
@@ -164,6 +196,7 @@ export class DiagnosticEngine {
         evidence_for: signals.flatMap((s) => s.evidence),
         evidence_against: [],
         remediations: [],
+        primarySignal: null,
       });
     }
 

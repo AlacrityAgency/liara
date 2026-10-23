@@ -1,12 +1,16 @@
 import type { FixBrief, Incident } from "@sokan/contracts";
 import type { CollectedEvidence, DiagCriterion } from "./types";
-import { clusterErrors } from "./logparse";
+import { clusterErrors, clusterFailureLines } from "./logparse";
 import { STANDARD_RUNBOOKS } from "./runbooks";
 import { failingPathsFromEvidence } from "./verifier";
 
 export type Redactor = (text: string) => string;
 
 const identity: Redactor = (t) => t;
+
+/** The real tool the Coding Agent calls after the fix (round 3 item 5; was "sokan_deploy"). */
+export const DEPLOY_TOOL = "deploy" as const;
+const DEPLOY_BACK = DEPLOY_TOOL;
 
 /** Frames and errors that point at noise rather than at the bug (EADDRINUSE is a deployment port clash). */
 const NOISE_ERROR = /EADDRINUSE|EACCES: permission denied, listen/i;
@@ -15,7 +19,10 @@ const NOISE_ERROR = /EADDRINUSE|EACCES: permission denied, listen/i;
 export function describeCriterion(c: DiagCriterion): { test: string; metric?: string } {
   switch (c.kind) {
     case "probe_not_5xx":
-      return { test: `GET ${c.path} answers with a status below 500 (non-zero)`, metric: "probe.status" };
+      return {
+        test: `GET ${c.path} returns 2xx or 3xx${c.allow4xx ? " (4xx also accepted: the app answers)" : ""}`,
+        metric: "probe.status",
+      };
     case "probe_ok":
       return { test: `GET ${c.path} returns 2xx or 3xx`, metric: "probe.status" };
     case "probe_latency_below":
@@ -54,7 +61,9 @@ export function createFixBrief(
   const rb = STANDARD_RUNBOOKS.find((r) => r.id === top?.runbookId);
   const logs = evidenceData.logs ?? [];
   const logById = new Map(logs.map((l) => [l.id, l.text]));
+  // Stack-trace clusters point at code locations; repeated failure lines (no stack) are the evidence when there are none.
   const clusters = clusterErrors(logs);
+  const errorClusters = clusters.length > 0 ? clusters : clusterFailureLines(logs);
   const failing = failingPathsFromEvidence(evidenceData);
   const path = failing[0] ?? "/";
   const failingProbe = (evidenceData.probes ?? []).find((p) => p.path === path && (p.status === null || p.status >= 400));
@@ -73,12 +82,14 @@ export function createFixBrief(
 
   // Evidence: top error clusters with redacted raw excerpts, then the evidence the hypothesis cites.
   const evidenceItems: FixBrief["evidence"] = [];
-  for (const c of clusters.filter((x) => !NOISE_ERROR.test(x.message)).slice(0, 3)) {
+  for (const c of errorClusters.filter((x) => !NOISE_ERROR.test(x.message)).slice(0, 3)) {
     const raw = logById.get(c.sampleIds[0]) ?? "";
     evidenceItems.push({
       type: "log",
       ts: c.firstTs,
-      text: redact(`${c.errorType}: ${c.message} (${c.count} occurrences)`),
+      text: redact(c.runtime === "generic"
+        ? `${c.message} (${c.count} occurrences)`
+        : `${c.errorType}: ${c.message} (${c.count} occurrences)`),
       id: c.sampleIds[0],
       kind: "log",
       excerpt: redact(raw.slice(0, 300)),
@@ -130,8 +141,9 @@ export function createFixBrief(
     ? `علت محتمل: ${top.title_fa} (اطمینان ${top.confidence === "high" ? "بالا" : top.confidence === "medium" ? "متوسط" : "پایین"}). ${top.explain_fa}` +
       (failing.length > 0 ? ` مسیر خراب: ${path}.` : "")
     : "علت مشخصی یافت نشد؛ داده‌ی بیشتری لازم است.";
-  const summary_en = top && rb
-    ? `Probable cause: ${rb.title_en} (confidence ${top.confidence}).` + (failing.length > 0 ? ` Failing path: ${path}.` : "")
+  const summary_en = top
+    ? `Probable cause: ${rb?.title_en ?? "unclassified error in the logs"} (confidence ${top.confidence}).` +
+      (failing.length > 0 ? ` Failing path: ${path}.` : "")
     : "No probable cause found; more evidence is needed.";
 
   return {
@@ -148,7 +160,7 @@ export function createFixBrief(
     probable_cause: { title: top?.title_fa ?? "نامشخص", confidence: top ? Math.round(top.score * 1000) / 1000 : 0 },
     reproduction,
     acceptance,
-    deploy_back: "sokan_deploy",
+    deploy_back: DEPLOY_BACK,
   };
 }
 
@@ -186,7 +198,7 @@ export function fixBriefToMarkdown(brief: FixBrief): string {
   out.push(
     "## Handoff",
     "",
-    `After the fix, deploy with \`${brief.deploy_back ?? "sokan_deploy"}\` (L2, needs approval in the Sokan console), then rerun the acceptance checks.`,
+    `After the fix, deploy with \`${brief.deploy_back ?? DEPLOY_TOOL}\` (L2, needs approval in the Sokan console), then rerun the acceptance checks.`,
     ""
   );
   return out.join("\n");

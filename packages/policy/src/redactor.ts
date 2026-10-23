@@ -45,6 +45,12 @@ const JSON_SECRET_REGEX = /("(?:password|passwd|pwd|secret|client_secret|apiKey|
 const X_API_KEY_HEADER_REGEX = /(\bx-api-key\s*:\s*)[^\s"',;]+/gi;
 const COOKIE_HEADER_REGEX = /(\b(?:Set-)?Cookie\s*:\s*)[^\r\n]+/gi;
 const SOKAN_SESSION_REGEX = /\bsokan_session=[^\s;,"']+/g;
+// Colon forms as in YAML and log lines: "secret: x", "token: x", "passwd: x", "api_key: x". Runs after the Bearer rules.
+const COLON_SECRET_REGEX = /((?:^|[\s,{(])(?:password|passwd|pwd|secret|client_secret|api[_-]?key|apikey|token)\s*:\s*["']?)[^\s&"';,}]+/gim;
+// Stripe webhook signing secrets, npm access tokens and SendGrid API keys (EVALUATION round 3, item 7).
+const STRIPE_WEBHOOK_SECRET_REGEX = /\bwhsec_[A-Za-z0-9]{16,}/g;
+const NPM_TOKEN_REGEX = /\bnpm_[A-Za-z0-9]{20,}/g;
+const SENDGRID_KEY_REGEX = /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g;
 
 export interface SecretRedactorOptions {
   /** Known secret values (for example from .env). Values shorter than 8 characters are ignored. */
@@ -126,12 +132,16 @@ export class SecretRedactor {
     redacted = redacted.replace(JWT_REGEX, "[REDACTED_JWT]");
     redacted = redacted.replace(BEARER_AUTH_REGEX, "Bearer [REDACTED_TOKEN]");
     redacted = redacted.replace(BARE_BASIC_AUTH_REGEX, "Basic [REDACTED_TOKEN]");
+    redacted = redacted.replace(COLON_SECRET_REGEX, (_match, prefix) => `${prefix}[REDACTED]`);
 
     // 5. Provider keys
     redacted = redacted.replace(OPENAI_STYLE_KEY_REGEX, "[REDACTED_API_KEY]");
     redacted = redacted.replace(AWS_ACCESS_KEY_REGEX, "[REDACTED_AWS_KEY]");
     redacted = redacted.replace(AWS_SECRET_KEY_REGEX, (_match, prefix) => `${prefix}[REDACTED_SECRET]`);
     redacted = redacted.replace(GITHUB_TOKEN_REGEX, "[REDACTED_GITHUB_TOKEN]");
+    redacted = redacted.replace(STRIPE_WEBHOOK_SECRET_REGEX, "[REDACTED_SECRET]");
+    redacted = redacted.replace(NPM_TOKEN_REGEX, "[REDACTED_TOKEN]");
+    redacted = redacted.replace(SENDGRID_KEY_REGEX, "[REDACTED_API_KEY]");
 
     // 6. Sensitive env lines (KEY=value)
     redacted = redacted.replace(ENV_LINE_REGEX, (_match, key) => `${key}=[REDACTED_SECRET]`);

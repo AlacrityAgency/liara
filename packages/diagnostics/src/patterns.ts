@@ -94,6 +94,39 @@ export function isErrorLine(text: string): boolean {
   return ERROR_LINE.test(text);
 }
 
+// Failure wording that is not an "error" or "exception" line (EVALUATION round 3, item 1).
+const FAILURE_WORD = /\b(?:failed|failure|invalid|rejected|denied|refused|timeout|timed\s+out|unauthorized|forbidden)\b/i;
+/** Persian «خطا» (error) and «ناموفق» (unsuccessful). */
+const FAILURE_FA = /خطا|ناموفق/;
+
+/**
+ * HTTP status of an access or request line: `"GET /x HTTP/1.1" 502`, `HTTP/1.1 404`, `status=500`, or a
+ * Gin-style table cell `| 500 |`. Returns null when the line has no 4xx or 5xx status.
+ */
+const ACCESS_STATUS = /"\s+(\d{3})\b|\bHTTP\/\d(?:\.\d)?"?\s+(\d{3})\b|\bstatus(?:Code)?\s*[=:]\s*(\d{3})\b|\|\s*(\d{3})\s*\|/i;
+
+export function accessStatus(text: string): number | null {
+  const m = text.match(ACCESS_STATUS);
+  if (!m) return null;
+  const code = Number(m[1] ?? m[2] ?? m[3] ?? m[4]);
+  return code >= 400 && code <= 599 ? code : null;
+}
+
+/**
+ * A line that counts as a failure on its own: error wording, failure words, Persian خطا/ناموفق, or an HTTP 5xx
+ * status (5xx is always a failure). A 4xx status alone is not; logparse admits those only when they repeat and rise.
+ */
+export function isFailureLine(text: string): boolean {
+  if (isErrorLine(text) || FAILURE_WORD.test(text) || FAILURE_FA.test(text)) return true;
+  const status = accessStatus(text);
+  return status !== null && status >= 500;
+}
+
+/** Normalised line used as the cluster and signature key, so repeats with different ids or numbers group together. */
+export function failureSignature(text: string): string {
+  return text.trim().replace(/\b[0-9a-f]{8,}\b/gi, "<id>").replace(/\b\d+\b/g, "<n>").slice(0, 160);
+}
+
 /** Port a process reports it listens on, e.g. "App listening on port 3100". */
 export function listenedPort(text: string): number | null {
   const m = text.match(/listening (?:on|at)\s+(?:port\s+|https?:\/\/[^\s:]*:|[\d.]*:|:)?(\d{2,5})\b/i);

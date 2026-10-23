@@ -207,6 +207,7 @@ async function investigate(core, turn, { symptom, proposeCards = true }) {
     ? {
         id: top.id,
         title_fa: top.title_fa,
+        primarySignal: top.primarySignal ?? null,
         confidence: top.confidence,
         score: top.score,
         evidence_for: top.evidence_for,
@@ -220,7 +221,7 @@ async function investigate(core, turn, { symptom, proposeCards = true }) {
     top_hypothesis: topView,
     hypotheses: incident.hypotheses.map((h) => ({ id: h.id, title_fa: h.title_fa, confidence: h.confidence })),
     rejected: incident.rejected,
-    signals: incident.signals.map((s) => ({ kind: s.kind, detail_fa: s.detail_fa, evidence: s.evidence })),
+    signals: incident.signals.map((s) => ({ kind: s.kind, detail_fa: s.detail_fa, evidence: s.evidence, data: s.data })),
     evidence: incident.evidence.map((e) => ({ id: e.id, type: e.type, ts: e.ts, summary: e.summary })),
     missing_evidence: incident.missingEvidence,
     flags: incident.flags.map((f) => ({ kind: "PROMPT_INJECTION", evidenceId: f.evidenceId, excerpt: f.excerpt })),

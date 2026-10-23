@@ -40,6 +40,11 @@ export interface DiagnosticRunbook {
   confirmingTest_fa: string;
   suggested_change_fa: string;
   remediations: RunbookRemediation[];
+  /**
+   * Used instead of explain/confirm text when the OOM evidence is a log line without a memory series (round 3 item 3).
+   * `prepend` goes before the regular remediations, so the restart with observation comes first.
+   */
+  logOnlyOom?: { explain_fa: string; confirmingTest_fa: string; prepend: RunbookRemediation[] };
 }
 
 const FAILING_PATH = "{{failingPath}}";
@@ -204,6 +209,21 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
     dependsOn: ["metrics_memory", "applets_get"],
     explain_fa: "مصرف حافظه‌ی برنامه ثابت و نزدیک سقف پلن است و رشد خطی دیده نمی‌شود؛ پلن برای بار کاری فعلی کوچک است.",
     confirmingTest_fa: "مقایسه‌ی p95 حافظه با سقف پلن در ساعات اوج ترافیک و نبود شیب رشد",
+    logOnlyOom: {
+      explain_fa: "این فرضیه فقط از روی رخداد OOM ساخته شده است. اگر نشت باشد، پس از ری‌استارت دوباره به سقف می‌رسد؛ اگر پلن کوچک باشد، همان بار کاری دوباره آن را پر می‌کند.",
+      confirmingTest_fa: "ابتدا ری‌استارت (بی‌هزینه) و مشاهده‌ی حافظه در چند ساعت؛ اگر دوباره به سقف رسید، پلن را ارتقا دهید.",
+      prepend: [{
+        tool: "app_restart",
+        risk: "L2",
+        params_template: {},
+        title_fa: "ری‌استارت برای مشاهده‌ی حافظه (گام اول)",
+        cost_fa: "بدون هزینه؛ حدود ۱۰ ثانیه قطعی",
+        impact_fa: "قطع کوتاه سرویس؛ حافظه آزاد می‌شود و تاریخچه‌ی حافظه شروع می‌شود",
+        rollback_fa: "نیازی نیست؛ ری‌استارت برگشت‌پذیر است",
+        successCriteria: { kind: "restarts_stable" },
+        successCriteria_fa: "برنامه بالا بیاید و OOM جدیدی ثبت نشود؛ سپس روند حافظه بررسی شود",
+      }],
+    },
     suggested_change_fa:
       "حافظه‌ی مصرفی ثابت و نزدیک سقف است و نشت خطی دیده نمی‌شود. پلن با RAM بیشتر انتخاب کنید (right-sizing). در کد هم اندازه‌ی کش‌ها، تعداد workerها و بافرها را با سقف جدید هماهنگ کنید.",
     remediations: [
@@ -282,8 +302,9 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
         cost_fa: "بدون هزینه؛ ری‌استارت کوتاه",
         impact_fa: "ری‌استارت برنامه با پورت جدید",
         rollback_fa: "بازگرداندن پورت قبلی با app_update_port",
-        successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
-        successCriteria_fa: "مسیر عمومی (مسیر خراب یا /) پاسخ غیر ۵xx بدهد؛ پاسخ ۰ یا خطای ۵xx یعنی هنوز قطع است",
+        // A 404 from the app proves the port is right; status 0 or 5xx still means the port is wrong.
+        successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH, allow4xx: true },
+        successCriteria_fa: "مسیر عمومی (مسیر خراب یا /) پاسخ برنامه را بدهد (۲xx، ۳xx یا ۴xx)؛ پاسخ ۰ یا ۵xx یعنی هنوز قطع است",
       },
     ],
   },
@@ -581,7 +602,7 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
         impact_fa: "قطع کوتاه سرویس",
         rollback_fa: "نیازی نیست",
         successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
-        successCriteria_fa: "مسیر خراب پاسخ غیر ۵xx بدهد",
+        successCriteria_fa: "مسیر خراب پاسخ ۲xx یا ۳xx بدهد",
       },
       {
         tool: "coding_agent_handoff",
@@ -592,7 +613,7 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
         impact_fa: "بدون تغییر در برنامه‌ی زنده",
         rollback_fa: "—",
         successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
-        successCriteria_fa: "پس از اصلاح، مسیر خراب پاسخ غیر ۵xx بدهد",
+        successCriteria_fa: "پس از اصلاح، مسیر خراب پاسخ ۲xx یا ۳xx بدهد",
       },
     ],
   },
@@ -631,7 +652,7 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
         impact_fa: "بدون تغییر در برنامه‌ی زنده",
         rollback_fa: "—",
         successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
-        successCriteria_fa: "پس از اصلاح، مسیر خراب پاسخ غیر ۵xx بدهد",
+        successCriteria_fa: "پس از اصلاح، مسیر خراب پاسخ ۲xx یا ۳xx بدهد",
       },
     ],
   },
@@ -659,7 +680,7 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
         impact_fa: "بدون تغییر در برنامه‌ی زنده",
         rollback_fa: "—",
         successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
-        successCriteria_fa: "پس از اصلاح، مسیر خراب پاسخ غیر ۵xx بدهد",
+        successCriteria_fa: "پس از اصلاح، مسیر خراب پاسخ ۲xx یا ۳xx بدهد",
       },
     ],
   },
@@ -687,7 +708,7 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
         impact_fa: "بدون تغییر در برنامه‌ی زنده",
         rollback_fa: "—",
         successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
-        successCriteria_fa: "پس از ساخت موفق و دیپلوی، مسیر خراب پاسخ غیر ۵xx بدهد",
+        successCriteria_fa: "پس از ساخت موفق و دیپلوی، مسیر خراب پاسخ ۲xx یا ۳xx بدهد",
       },
     ],
   },

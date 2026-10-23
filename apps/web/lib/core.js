@@ -357,14 +357,18 @@ function createCore(options = {}) {
   core.buildState = () => {
     const s = core.state;
     const ephemeral = approvals.isEphemeralSecret;
+    const auditOk = auditIntegrityOk();
     return core.clean({
       mode: core.mode(),
       isEphemeralSecret: ephemeral,
       /** False when the audit chain is broken or unreadable: both UIs show a warning. */
-      auditOk: auditIntegrityOk(),
-      warning_fa: ephemeral
-        ? "کلید ثابت (SOKAN_SECRET) تنظیم نشده است؛ تأییدها و Audit با ری‌استارت کنسول از بین می‌روند."
-        : null,
+      auditOk,
+      // A broken audit log outranks the ephemeral-key notice: it is the more serious finding.
+      warning_fa: !auditOk
+        ? "دفتر ممیزی دستکاری شده یا ناقص است"
+        : ephemeral
+          ? "کلید ثابت (SOKAN_SECRET) تنظیم نشده است؛ تأییدها و Audit با ری‌استارت کنسول از بین می‌روند."
+          : null,
       llm: llm.isConfigured ? { configured: true, model: llm.model } : { configured: false },
       app: core.appView(),
       account: s.account,

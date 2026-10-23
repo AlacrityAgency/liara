@@ -1,7 +1,7 @@
 import type { CollectedEvidence, DiagCriterion } from "./types";
 import { clusterErrors } from "./logparse";
 import { percentile } from "./stats";
-import { isErrorLine } from "./patterns";
+import { failureSignature, isErrorLine, isFailureLine } from "./patterns";
 import { isRunning } from "./extractors";
 
 /** State of the system at one moment, for before/after comparison (WHITEPAPER §8.6). */
@@ -50,12 +50,16 @@ export interface VerifyOptions {
   mitigationOnly?: boolean;
 }
 
+/** Runbooks whose memory problem a restart only relieves: leaks, and plans too small for the load (log-only OOM). */
+const MEMORY_RUNBOOKS = new Set(["oom_leak", "leak_no_oom", "undersized_plan"]);
+
 /**
- * A restart fixes a leak only for a while. Such remediations end as "mitigated", and the result text
- * points to the Fix Brief for the real fix (EVALUATION R5).
+ * A restart only relieves a memory problem for a while, so such a pass ends as "mitigated" (EVALUATION R5). The
+ * answer depends on the runbook family and the action alone, never on which runbook happened to rank first in
+ * the window, so the same remediation gets the same outcome whatever the timing (round 3 item 8).
  */
 export function isMitigationOnlyRemediation(runbookId: string | undefined, action: string): boolean {
-  return action === "app_restart" && (runbookId === "oom_leak" || runbookId === "leak_no_oom");
+  return action === "app_restart" && MEMORY_RUNBOOKS.has(runbookId ?? "");
 }
 
 /** Western digits to Persian, decimal point to Persian decimal separator. */
@@ -90,8 +94,8 @@ export function takeSnapshot(
   // pool and DB messages that are not stack traces still count for no_error_signature.
   const groups = new Map<string, number>();
   for (const l of logs) {
-    if (!isErrorLine(l.text)) continue;
-    const key = l.text.trim().replace(/\b[0-9a-f]{8,}\b/gi, "<id>").replace(/\b\d+\b/g, "<n>").slice(0, 160);
+    if (!isFailureLine(l.text)) continue;
+    const key = failureSignature(l.text);
     groups.set(key, (groups.get(key) ?? 0) + 1);
   }
   const errorSignatures = [...groups].map(([signature, count]) => ({ signature, count }));
@@ -173,7 +177,7 @@ export function verify(
       checks,
       summary_fa:
         `راستی‌آزمایی موفق اما فقط کاهش موقت: ${details.join("؛ ")}. ` +
-        "ری‌استارت علت نشت حافظه را برطرف نمی‌کند؛ اصلاح واقعی در کد است (Fix Brief).",
+        "ری‌استارت علت حافظه را برطرف نمی‌کند؛ حافظه را رصد کنید و سپس اصلاح کد (Fix Brief) یا ارتقای پلن را انجام دهید.",
     };
   }
   return { passed, outcome: "resolved", checks, summary_fa: `راستی‌آزمایی موفق: ${details.join("؛ ")}.` };
@@ -182,18 +186,20 @@ export function verify(
 function evaluate(c: DiagCriterion, before: VerifySnapshot, after: VerifySnapshot): VerifyCheck {
   switch (c.kind) {
     case "probe_not_5xx": {
-      // Public path check for port and proxy problems: any answer below 500 means the app is reachable (EVALUATION R5).
+      // Healthy means 2xx or 3xx. allow4xx (port checks only) also accepts 4xx, which proves the app answers (EVALUATION round 3, item 4).
+      // The kind keeps its name for compatibility with stored incidents.
       const a = after.probe.find((p) => p.path === c.path);
       const b = before.probe.find((p) => p.path === c.path);
       const status = a?.status;
-      const passed = typeof status === "number" && status > 0 && status < 500;
+      const answered4xx = c.allow4xx === true && typeof status === "number" && status >= 400 && status < 500;
+      const passed = isOk(status) || answered4xx;
       const detail = !a || status === null || status === undefined
         ? `${c.path} پروب نشد`
         : passed
           ? `${c.path} پاسخ ${fa(status)} داد؛ برنامه از پروکسی در دسترس است`
           : status === 0
             ? `${c.path} پاسخی نگرفت؛ اتصال هنوز برقرار نیست`
-            : `${c.path} هنوز پاسخ ${fa(status)} می‌دهد؛ انتظار پاسخ زیر ۵۰۰`;
+            : `${c.path} هنوز پاسخ ${fa(status)} می‌دهد؛ انتظار پاسخ ۲xx یا ۳xx`;
       return { criterion: c, passed, before: b?.status ?? null, after: status ?? null, detail_fa: detail };
     }
     case "probe_ok": {

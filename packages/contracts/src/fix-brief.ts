@@ -26,5 +26,5 @@ export interface FixBrief {
   probable_cause?: { title: string; confidence: number };
   reproduction?: string;
   acceptance?: Array<{ test: string; metric?: string }>;
-  deploy_back?: "sokan_deploy";
+  deploy_back?: "deploy";
 }

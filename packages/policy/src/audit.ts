@@ -21,8 +21,9 @@ export type AuditInput = Omit<AuditEntry, "seq" | "timestamp" | "previousRecordH
 /**
  * CHAIN_BROKEN (no reason field): a record fails its MAC or link. TRUNCATED: records at the end were removed.
  * HEAD_INVALID: audit.head fails its MAC. HEAD_MISMATCH: the record at the head position was replaced.
+ * HEAD_MISSING: the log has records but audit.head is gone, so tail truncation could hide (EVALUATION round 3, item 6).
  */
-export type AuditFailureReason = "TRUNCATED" | "HEAD_INVALID" | "HEAD_MISMATCH";
+export type AuditFailureReason = "TRUNCATED" | "HEAD_INVALID" | "HEAD_MISMATCH" | "HEAD_MISSING";
 export type VerifyResult = { ok: true } | { ok: false; brokenAt: number; reason?: AuditFailureReason };
 
 export interface AuditLedgerOptions {
@@ -185,10 +186,16 @@ export class AuditLedger {
     return { ok: true };
   }
 
-  /** Compares the signed head with the file. A missing head (logs written before it existed) is not an error. */
+  /**
+   * Compares the signed head with the file. Once the log has a record, a missing head is an error: without it,
+   * records removed from the end would pass unnoticed. An empty log needs no head.
+   */
   private checkHead(records: readonly AuditEntry[]): VerifyResult {
     const headPath = this.headPath();
-    if (!headPath || !fs.existsSync(headPath)) return { ok: true };
+    if (!headPath) return { ok: true };
+    if (!fs.existsSync(headPath)) {
+      return records.length >= 1 ? { ok: false, brokenAt: records.length + 1, reason: "HEAD_MISSING" } : { ok: true };
+    }
     let head: HeadRecord | undefined;
     try {
       head = JSON.parse(fs.readFileSync(headPath, "utf8")) as HeadRecord;

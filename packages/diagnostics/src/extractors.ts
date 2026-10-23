@@ -27,6 +27,30 @@ export interface SignalExtractionResult {
 
 export const clamp = (v: number, lo = 0, hi = 1): number => Math.min(hi, Math.max(lo, v));
 
+const HOST_PORT_PATTERNS: RegExp[] = [
+  /@([A-Za-z0-9._-]+)(?::(\d{2,5}))?/,                                        // user:password@host:port
+  /:\/\/([A-Za-z0-9._-]+)(?::(\d{2,5}))?/,                                    // scheme://host:port
+  /host\s+"([A-Za-z0-9._-]+)"/i,                                              // psycopg: host "db"
+  /\b((?:\d{1,3}\.){3}\d{1,3}|localhost|[A-Za-z][\w-]*(?:\.[\w-]+)*):(\d{2,5})\b/, // 10.0.0.5:5432, db:6379
+];
+
+/** Host and port named in a connection error line. Passwords are never returned. Both are null when absent. */
+export function hostPortOf(text: string): { host: string | null; port: number | null } {
+  for (const re of HOST_PORT_PATTERNS) {
+    const m = text.match(re);
+    if (m) return { host: m[1], port: m[2] ? Number(m[2]) : null };
+  }
+  return { host: null, port: null };
+}
+
+/** Host of the first URL on an upstream line, or a bare domain name; null when the line names none. */
+function upstreamHostOf(text: string): string | null {
+  const url = text.match(/https?:\/\/([A-Za-z0-9._-]+)/i);
+  if (url) return url[1];
+  const bare = text.match(/\b((?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d+)?\b/i);
+  return bare ? bare[1] : null;
+}
+
 export function isRunning(state: string | undefined): boolean {
   return (state ?? "").toLowerCase() === "running";
 }
@@ -86,6 +110,7 @@ export function extractSignals(
   const logs = data.logs ?? [];
   const applets = data.applets ?? [];
   const add = (s: Signal) => signals.push(s);
+  const hasMemorySeries = (data.memory ?? []).length > 0;
 
   // 2. OOM_KILLED: an applet reason, an OOM log line, or an exit event that names OOMKilled / exit code 137
   const oomApplets = applets.filter(
@@ -110,7 +135,13 @@ export function extractSignals(
       detail_fa: "کانتینر به دلیل فراتر رفتن از سقف حافظه (OOMKilled) توسط سیستم متوقف شد.",
       evidence: evIds,
       strength: oomApplets.length > 0 ? 1 : clamp(0.7 + 0.1 * (oomLogs.length + oomEvents.length)),
-      data: { appletOOM: oomApplets.length, oomLogLines: oomLogs.length, oomEvents: oomEvents.length },
+      data: {
+        limitMB: data.app?.memoryLimitMB ?? null,
+        appletOOM: oomApplets.length,
+        oomLogLines: oomLogs.length,
+        oomEvents: oomEvents.length,
+        hasMemorySeries,
+      },
     });
   }
 
@@ -136,7 +167,7 @@ export function extractSignals(
         detail_fa: `مصرف حافظه (p95) به ${Math.round(p95)}٪ سقف پلن رسید (حداکثر ${maxMB} مگابایت از ${limitMB} مگابایت).`,
         evidence: [evId],
         strength: clamp(0.5 + (0.5 * (p95 - thresholds.memoryPressurePct)) / (100 - thresholds.memoryPressurePct)),
-        data: { p95Pct: Math.round(p95), peakMB: maxMB, limitMB },
+        data: { pct: Math.round(p95), rssMB: maxMB, limitMB },
       });
     }
 
@@ -167,12 +198,13 @@ export function extractSignals(
               0.4 + 0.3 * clamp((reg.r2 - thresholds.leakMinR2) / (1 - thresholds.leakMinR2)) + 0.3 * clamp(growthPct / 100)
             ),
             data: {
+              pct: Math.round((memory[memory.length - 1].mb / limitMB) * 100),
+              rssMB: memory[memory.length - 1].mb,
+              limitMB,
               slopeMBPerMin: Math.round(slopeMBPerMin * 100) / 100,
               r2: Math.round(reg.r2 * 1000) / 1000,
               growthPct: Math.round(growthPct),
               minutesToLimit: Math.round(minutesToLimit),
-              limitMB,
-              currentMB: memory[memory.length - 1].mb,
             },
           });
         }
@@ -286,7 +318,7 @@ export function extractSignals(
         detail_fa: `ناهمخوانی پورت: برنامه روی پورت ${listened} گوش می‌دهد اما پورت تنظیم‌شده در لیارا ${configuredPort} است.`,
         evidence: evIds,
         strength: 1,
-        data: { listenedPort: listened, configuredPort },
+        data: { listenPort: listened, expectedPort: configuredPort },
       });
     }
   }
@@ -325,19 +357,22 @@ export function extractSignals(
       evIds.push(addEv("metric", nowTs, `DB health check failed: ${data.db?.detail ?? "Unreachable"}`, "db"));
     }
     const portHit = dbLines.some((l) => /(?<!\d)(?:5432|3306|27017)(?!\d)/.test(l.text));
+    const dbWhere = dbLines[0] ? hostPortOf(dbLines[0].text) : { host: null, port: null };
+    const defaultDbPort = Number(dbLines[0]?.text.match(/5432|3306|27017/)?.[0]) || null;
     add({
       kind: "DB_UNREACHABLE",
       firstSeen: dbLines[0]?.ts ?? nowTs,
       detail_fa: "عدم دسترسی به پایگاه‌داده: اتصال به سرور دیتابیس برقرار نشد.",
       evidence: evIds,
       strength: dbHealthFailed ? 1 : portHit ? 0.9 : 0.75,
-      data: { lines: dbLines.length },
+      data: { host: dbWhere.host, port: dbWhere.port ?? defaultDbPort, lines: dbLines.length },
     });
   }
 
   // 10. CACHE_UNREACHABLE (Redis)
   const cacheLines = logs.filter((l) => isCacheUnreachableLine(l.text));
   if (cacheLines.length > 0) {
+    const cacheWhere = hostPortOf(cacheLines[0].text);
     const evIds = cacheLines.slice(0, 2).map((l) =>
       addEv("log", l.ts, `Cache connection error: ${l.text.slice(0, 120)}`, l.id)
     );
@@ -347,7 +382,7 @@ export function extractSignals(
       detail_fa: "کش (Redis) در دسترس نیست یا اتصال به آن زمان‌بر تایم‌اوت شده است.",
       evidence: evIds,
       strength: clamp(0.8 + 0.05 * cacheLines.length),
-      data: { lines: cacheLines.length },
+      data: { host: cacheWhere.host, port: cacheWhere.port ?? 6379, lines: cacheLines.length },
     });
   }
 
@@ -436,13 +471,23 @@ export function extractSignals(
     for (const p of slowProbes.slice(0, 2)) {
       evIds.push(addEv("probe", p.ts, `Probe response time high: ${p.ms}ms on ${p.path}`, p.id));
     }
+    // Latency samples: probe times, or the "NNNms" figures printed on upstream lines.
+    const upstreamMs = upstreamLogs
+      .map((l) => Number(l.text.match(/(\d{3,6})\s*ms\b/)?.[1]))
+      .filter((n) => Number.isFinite(n));
+    const latencies = [...slowProbes.map((p) => p.ms ?? 0), ...upstreamMs];
     add({
       kind: "UPSTREAM_SLOW",
       firstSeen: upstreamLogs[0]?.ts ?? slowProbes[0]?.ts ?? nowTs,
       detail_fa: "کندی ناشی از تأخیر یا تایم‌اوت سرویس‌های خارجی یا درگاه‌ها.",
       evidence: evIds,
       strength: clamp(0.6 + 0.1 * (upstreamLogs.length + slowProbes.length)),
-      data: { upstreamLines: upstreamLogs.length, slowProbes: slowProbes.length },
+      data: {
+        host: upstreamLogs.length > 0 ? upstreamHostOf(upstreamLogs[0].text) : null,
+        p95Ms: percentile(latencies, 95),
+        upstreamLines: upstreamLogs.length,
+        slowProbes: slowProbes.length,
+      },
     });
   }
 

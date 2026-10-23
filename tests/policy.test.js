@@ -710,12 +710,30 @@ describe("R10. Audit head detects tail truncation", () => {
     assert.strictEqual(ledger.verify().reason, "HEAD_INVALID");
   });
 
-  it("an intact log without a head file (written before the head existed) still verifies", () => {
+  it("a log with records but no head file is HEAD_MISSING, so tail truncation cannot hide (round 3 item 6)", () => {
     const file = tmpFile();
     const ledger = new AuditLedger({ filePath: file, key: KEY });
     ledger.append(entry(1));
     fs.rmSync(path.join(path.dirname(file), "audit.head"));
+    const result = new AuditLedger({ filePath: file, key: KEY }).verify();
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason, "HEAD_MISSING");
+  });
+
+  it("an empty log needs no head file", () => {
+    const file = tmpFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "");
     assert.deepStrictEqual(new AuditLedger({ filePath: file, key: KEY }).verify(), { ok: true });
+  });
+
+  it("the first append writes audit.head, so a log with one record always has its head", () => {
+    const file = tmpFile();
+    const ledger = new AuditLedger({ filePath: file, key: KEY });
+    ledger.append(entry(1));
+    const head = JSON.parse(fs.readFileSync(path.join(path.dirname(file), "audit.head"), "utf8"));
+    assert.strictEqual(head.count, 1);
+    assert.deepStrictEqual(ledger.verify(), { ok: true });
   });
 
   it("a broken chain keeps the old shape (no reason field) so existing callers see brokenAt only", () => {
@@ -726,5 +744,49 @@ describe("R10. Audit head detects tail truncation", () => {
     const text = fs.readFileSync(file, "utf8").replace('"approvalId":"apr_1"', '"approvalId":"apr_X"');
     fs.writeFileSync(file, text);
     assert.deepStrictEqual(new AuditLedger({ filePath: file, key: KEY }).verify(), { ok: false, brokenAt: 1 });
+  });
+});
+
+// ---------- round 3 (EVALUATION §6, item 7): colon forms, webhook secrets, npm and SendGrid tokens ----------
+
+describe("R3.7 Redactor: colon forms, Stripe webhook secrets, npm and SendGrid tokens", () => {
+  // Fixtures are built by concatenation so no literal secret-shaped string sits in the source (GitHub push protection).
+  const gone = (text, secrets) => {
+    const out = SecretRedactor.redactText(text);
+    for (const s of secrets) assert.ok(!out.includes(s), `leaked "${s}" in: ${out}`);
+    return out;
+  };
+
+  it("YAML and log colon forms: secret, token, passwd and api_key", () => {
+    const secret = "yaml-" + "secret-value-42";
+    const token = "abc" + "def" + "ghi" + "123";
+    const passwd = "pw" + "-super-42";
+    const apiKey = "key" + "-live-xyz-9";
+    const out = gone(`app:\n  secret: ${secret}\n  token: ${token}\n  passwd: ${passwd}\n  api_key: ${apiKey}\n`,
+      [secret, token, passwd, apiKey]);
+    assert.ok(out.includes("secret:") && out.includes("api_key:"), "the labels stay readable");
+  });
+
+  it("colon form in a single log line, quoted value included", () => {
+    gone("config loaded token: " + '"' + "quoted" + "-token-77" + '"', ["quoted-token-77"]);
+  });
+
+  it("Stripe webhook signing secrets (whsec_)", () => {
+    gone("signature check with " + "whsec_" + "AbCdEf1234567890GhIj failed", ["AbCdEf1234567890GhIj"]);
+  });
+
+  it("npm access tokens (npm_)", () => {
+    gone("publish used " + "npm_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4", ["A1b2C3d4E5f6G7h8I9j0K1l2M3n4"]);
+  });
+
+  it("SendGrid API keys (SG.<id>.<secret>)", () => {
+    const key = "SG" + "." + "AbCdEfGhIjKlMnOp" + "." + "QrStUvWxYz0123456789";
+    gone("sendgrid said " + key, ["AbCdEfGhIjKlMnOp", "QrStUvWxYz0123456789"]);
+  });
+
+  it("the colon rule leaves the Authorization header name and the JSON form intact", () => {
+    const out = gone("Authorization: Bearer " + "abcdefghijklmnopqrstu" + " and " + '{"token":"' + "json" + "-value-1" + '"}',
+      ["abcdefghijklmnopqrstu", "json-value-1"]);
+    assert.ok(out.includes("Authorization:"));
   });
 });

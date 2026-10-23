@@ -1,9 +1,46 @@
-import type { IncidentStatus, Signal, SignalKind, SuccessCriterion } from "@sokan/contracts";
+import type { Hypothesis, IncidentStatus, Signal, SignalKind, SuccessCriterion } from "@sokan/contracts";
 
 /** Aliases kept for the diagnostics package; the contracts own the kinds, statuses and criteria. */
 export type DiagSignalKind = SignalKind;
 export type DiagIncidentStatus = IncidentStatus;
-export type DiagCriterion = SuccessCriterion;
+/**
+ * Diagnostics-only extension: probe_not_5xx takes `allow4xx` (default false). Without it, only 2xx and 3xx count as
+ * healthy (EVALUATION round 3, item 4). The contracts type does not list the field yet.
+ */
+export type DiagCriterion = SuccessCriterion & { allow4xx?: boolean };
+
+/** Primitive facts a signal carries. Other layers build sentences from these values, not from detail_fa. */
+export type SignalFacts = Record<string, number | string | boolean | null>;
+
+/**
+ * Structured `data` per signal kind (round 3, item 2). Every value is a primitive or null.
+ * MEMORY_*: `pct` is p95 as a percentage of the limit, `rssMB` the value the sentence cites (peak for pressure,
+ * current for a leak trend), `limitMB` the plan or heap limit. OOM_KILLED: `limitMB` is null when unknown.
+ * UPSTREAM_SLOW: `host` is taken from the log line or null; `p95Ms` comes from probe times or null.
+ * DB_UNREACHABLE and CACHE_UNREACHABLE: `host` and `port` are parsed from the log line (null when absent).
+ */
+export interface SignalDataByKind {
+  MISSING_ENV: { variable: string };
+  PORT_MISMATCH: { listenPort: number; expectedPort: number };
+  MEMORY_PRESSURE: { pct: number; rssMB: number; limitMB: number };
+  MEMORY_LEAK_TREND: { pct: number; rssMB: number; limitMB: number; slopeMBPerMin: number; r2: number; growthPct: number; minutesToLimit: number };
+  OOM_KILLED: { limitMB: number | null; appletOOM: number; oomLogLines: number; oomEvents: number; hasMemorySeries: boolean };
+  CPU_SATURATION: { p95Pct: number; pointsAboveThreshold: number };
+  UPSTREAM_SLOW: { host: string | null; p95Ms: number | null; upstreamLines: number; slowProbes: number };
+  DB_UNREACHABLE: { host: string | null; port: number | null; lines: number };
+  CACHE_UNREACHABLE: { host: string | null; port: number | null; lines: number };
+}
+
+/** The strongest supporting signal of a hypothesis, with its structured facts. */
+export interface PrimarySignal {
+  kind: DiagSignalKind;
+  data: SignalFacts;
+}
+
+/** A hypothesis as the engine returns it: the contracts shape plus primarySignal (null when none supports it). */
+export interface DiagHypothesis extends Hypothesis {
+  primarySignal: PrimarySignal | null;
+}
 
 /**
  * Input to the diagnostic engine: what the collectors returned for one investigation window.

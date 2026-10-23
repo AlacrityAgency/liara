@@ -2,7 +2,9 @@
  * Stack-trace parser and error clustering — WHITEPAPER §10.3 (last paragraph).
  * Recognises Node.js, Python, PHP/Laravel and Go traces and groups them by
  * signature = error type + top user-code frame, so "412 occurrences" replaces 412 lines.
+ * clusterFailureLines covers the rest: repeated failure lines that no stack-trace parser recognises.
  */
+import { accessStatus, failureSignature, isFailureLine } from "./patterns";
 
 export interface LogLine {
   id: string;
@@ -149,4 +151,53 @@ export function clusterErrors(lines: readonly LogLine[]): ErrorCluster[] {
     }
   }
   return [...map.values()].sort((a, b) => b.count - a.count);
+}
+
+function isRising(timestamps: number[]): boolean {
+  const ts = timestamps.filter((t) => Number.isFinite(t));
+  if (ts.length < 2) return false;
+  const first = Math.min(...ts);
+  const last = Math.max(...ts);
+  if (last === first) return false;
+  const mid = (first + last) / 2;
+  const later = ts.filter((t) => t > mid).length;
+  return later > ts.length - later;
+}
+
+/**
+ * Clusters failure lines that no stack-trace parser recognises (EVALUATION round 3, item 1). Lines are grouped by
+ * failureSignature. A group made only of 4xx access lines counts when it repeats at least 5 times and its later
+ * half of the window has more hits than the earlier half. Returns runtime "generic", biggest group first.
+ */
+export function clusterFailureLines(lines: readonly LogLine[]): ErrorCluster[] {
+  type Group = { lines: LogLine[]; only4xx: boolean };
+  const groups = new Map<string, Group>();
+  for (const l of lines) {
+    const failing = isFailureLine(l.text);
+    const status = accessStatus(l.text);
+    if (!failing && !(status !== null && status >= 400 && status < 500)) continue;
+    const sig = failureSignature(l.text);
+    const g = groups.get(sig) ?? { lines: [], only4xx: true };
+    g.lines.push(l);
+    if (failing) g.only4xx = false;
+    groups.set(sig, g);
+  }
+
+  const out: ErrorCluster[] = [];
+  for (const [sig, g] of groups) {
+    const tss = g.lines.map((l) => Date.parse(l.ts));
+    if (g.only4xx && !(g.lines.length >= 5 && isRising(tss))) continue;
+    const sorted = [...g.lines].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+    out.push({
+      signature: sig,
+      runtime: "generic",
+      errorType: "LogFailure",
+      message: g.lines[0].text.trim().slice(0, 200),
+      count: g.lines.length,
+      firstTs: sorted[0].ts,
+      lastTs: sorted[sorted.length - 1].ts,
+      sampleIds: g.lines.slice(0, 5).map((l) => l.id),
+    });
+  }
+  return out.sort((a, b) => b.count - a.count);
 }
