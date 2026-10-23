@@ -1,0 +1,10 @@
+{
+  "name": "@sokan/liara-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Typed Liara Cloud API Client & Local Runtime Adapter with HumanError mapping",
+  "main": "../../build/liara-client/src/index.js",
+  "dependencies": {
+    "@sokan/contracts": "*"
+  }
+}
