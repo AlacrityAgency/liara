@@ -628,8 +628,10 @@ async function prepareDeploy(core, body, kind) {
 }
 
 function postCancel(core, id) {
-  const ok = core.approvals.cancel(id);
-  return good({ ok });
+  if (!core.approvals.cancel(id)) {
+    return bad(409, "NOT_CANCELLABLE", "این کار دیگر لغو نمی‌شود", "شاید قبلاً انجام شده یا لغو شده است.", "دوباره از اول شروع کنید.");
+  }
+  return good();
 }
 
 async function postConfirm(core, id, body) {

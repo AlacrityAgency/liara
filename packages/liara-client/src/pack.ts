@@ -53,7 +53,8 @@ interface Collected {
 
 /** Names that are never packed, at any depth (secrets and dependency/VCS folders). */
 export function isAlwaysExcluded(name: string): boolean {
-  if (name === "node_modules" || name === ".git") return true;
+  // .sokan/ holds local state (site.json, incident briefs, saved credentials): never upload it.
+  if (name === "node_modules" || name === ".git" || name === ".sokan") return true;
   if (name === ".env" || name.startsWith(".env.")) return true;
   return name.endsWith(".pem");
 }
