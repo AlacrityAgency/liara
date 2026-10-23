@@ -597,3 +597,134 @@ describe("P8. Standing approvals from a plain config (§7.3)", () => {
     assert.ok(COST_BEARING_TOOLS.includes("app_scale"));
   });
 });
+
+// ---------- round 2 (EVALUATION R10): redactor patterns and audit head ----------
+
+describe("R10. Redactor covers provider keys, assigned and JSON secrets, headers and cookies", () => {
+  const gone = (text, secrets) => {
+    const out = SecretRedactor.redactText(text);
+    for (const s of secrets) assert.ok(!out.includes(s), `leaked "${s}" in: ${out}`);
+    return out;
+  };
+
+  it("Stripe live and test keys (sk_ and rk_)", () => {
+    gone("charge with " + "sk_" + "live_" + "51HqExampleKeyValue123 failed", ["51HqExampleKeyValue123"]);
+    gone("key=" + "rk_" + "test_" + "FAKEFAKEFAKEFAKE00000000", ["FAKEFAKEFAKEFAKE00000000"]);
+  });
+
+  it("Slack xox tokens (xoxb, xoxp, xoxa, xoxs, xoxr, xoxo)", () => {
+    gone("SLACK=" + "xo" + "xb-" + "1234567890-abcdefghijkl", ["1234567890-abcdefghijkl"]);
+    gone("token " + "xo" + "xp-" + "9876543210-qwertyuiop", ["9876543210-qwertyuiop"]);
+  });
+
+  it("Google API keys (AIza...)", () => {
+    gone("maps key " + "AI" + "za" + "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q", ["SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q"]);
+  });
+
+  it("password=, secret=, apiKey= in text and query strings", () => {
+    gone("connect postgres password=hunter2supersecret host=db", ["hunter2supersecret"]);
+    gone("retry?secret=abcdef123456&x=1", ["abcdef123456"]);
+    gone("client apiKey=zz9Topsecretvalue", ["zz9Topsecretvalue"]);
+  });
+
+  it("JSON \"password\", \"secret\", \"apiKey\" values", () => {
+    const out = gone('{"user":"ali","password":"p@ss-word-1","secret":"s3cr3tValue","apiKey":"key-abc-123"}',
+      ["p@ss-word-1", "s3cr3tValue", "key-abc-123"]);
+    assert.ok(out.includes('"user":"ali"'), "non-secret fields stay readable");
+  });
+
+  it("x-api-key headers", () => {
+    gone("x-api-key: a1b2c3d4e5f6g7h8", ["a1b2c3d4e5f6g7h8"]);
+  });
+
+  it("Cookie and Set-Cookie header values, and the sokan_session cookie", () => {
+    gone("Cookie: sokan_session=feedfacecafebeef; theme=dark", ["feedfacecafebeef", "theme=dark"]);
+    gone("Set-Cookie: sokan_session=feedfacecafebeef; HttpOnly; Path=/", ["feedfacecafebeef"]);
+    gone("saved sokan_session=feedfacecafebeef in the log", ["feedfacecafebeef"]);
+  });
+
+  it("literal redaction of a configured secret still works next to the new rules", () => {
+    const r = new SecretRedactor({ literals: ["literal-secret-value"] });
+    assert.ok(!r.redactText("value literal-secret-value here").includes("literal-secret-value"));
+  });
+});
+
+describe("R10. Audit head detects tail truncation", () => {
+  const KEY = "audit-head-key-0002";
+  const dirs = [];
+  after(() => {
+    for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  });
+  const entry = (n) => ({
+    event: "executed", tool: "app_restart", riskLevel: "L2", caller: "agent",
+    paramsHash: "h".repeat(64), approvalId: `apr_${n}`, success: true,
+  });
+  function tmpFile() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sokan-audit-head-"));
+    dirs.push(dir);
+    return path.join(dir, "audit.jsonl");
+  }
+
+  it("writes audit.head with count, last hash and a MAC on every append", () => {
+    const file = tmpFile();
+    const ledger = new AuditLedger({ filePath: file, key: KEY });
+    ledger.append(entry(1));
+    ledger.append(entry(2));
+    const head = JSON.parse(fs.readFileSync(path.join(path.dirname(file), "audit.head"), "utf8"));
+    assert.strictEqual(head.count, 2);
+    assert.strictEqual(head.lastHash, ledger.list()[1].recordHash);
+    assert.ok(/^[0-9a-f]{64}$/.test(head.hmac));
+    assert.deepStrictEqual(ledger.verify(), { ok: true });
+  });
+
+  it("removing records from the end is reported as TRUNCATED, also after a restart", () => {
+    const file = tmpFile();
+    const ledger = new AuditLedger({ filePath: file, key: KEY });
+    for (let i = 1; i <= 4; i++) ledger.append(entry(i));
+    const lines = fs.readFileSync(file, "utf8").trimEnd().split("\n");
+    fs.writeFileSync(file, lines.slice(0, 2).join("\n") + "\n");
+    const result = ledger.verify();
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason, "TRUNCATED");
+    assert.strictEqual(new AuditLedger({ filePath: file, key: KEY }).verify().reason, "TRUNCATED");
+  });
+
+  it("a truncated log refuses to append after restart", () => {
+    const file = tmpFile();
+    const ledger = new AuditLedger({ filePath: file, key: KEY });
+    for (let i = 1; i <= 3; i++) ledger.append(entry(i));
+    const lines = fs.readFileSync(file, "utf8").trimEnd().split("\n");
+    fs.writeFileSync(file, lines.slice(0, 1).join("\n") + "\n");
+    const reloaded = new AuditLedger({ filePath: file, key: KEY });
+    assert.throws(() => reloaded.append(entry(9)), /AUDIT_CHAIN_BROKEN/);
+  });
+
+  it("a forged head (wrong MAC) is HEAD_INVALID", () => {
+    const file = tmpFile();
+    const ledger = new AuditLedger({ filePath: file, key: KEY });
+    ledger.append(entry(1));
+    const headPath = path.join(path.dirname(file), "audit.head");
+    const head = JSON.parse(fs.readFileSync(headPath, "utf8"));
+    head.count = 5;
+    fs.writeFileSync(headPath, JSON.stringify(head));
+    assert.strictEqual(ledger.verify().reason, "HEAD_INVALID");
+  });
+
+  it("an intact log without a head file (written before the head existed) still verifies", () => {
+    const file = tmpFile();
+    const ledger = new AuditLedger({ filePath: file, key: KEY });
+    ledger.append(entry(1));
+    fs.rmSync(path.join(path.dirname(file), "audit.head"));
+    assert.deepStrictEqual(new AuditLedger({ filePath: file, key: KEY }).verify(), { ok: true });
+  });
+
+  it("a broken chain keeps the old shape (no reason field) so existing callers see brokenAt only", () => {
+    const file = tmpFile();
+    const ledger = new AuditLedger({ filePath: file, key: KEY });
+    ledger.append(entry(1));
+    ledger.append(entry(2));
+    const text = fs.readFileSync(file, "utf8").replace('"approvalId":"apr_1"', '"approvalId":"apr_X"');
+    fs.writeFileSync(file, text);
+    assert.deepStrictEqual(new AuditLedger({ filePath: file, key: KEY }).verify(), { ok: false, brokenAt: 1 });
+  });
+});

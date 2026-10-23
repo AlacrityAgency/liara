@@ -1,15 +1,19 @@
 import type { Signal, SignalKind, EvidenceRef } from "@sokan/contracts";
-import type { CollectedEvidence, Thresholds } from "./types";
+import type { CollectedEvidence, DiagSignalKind, Thresholds } from "./types";
 import { DEFAULT_THRESHOLDS } from "./types";
 import { linearRegression, percentile } from "./stats";
 import { clusterErrors } from "./logparse";
 import {
   isCacheUnreachableLine,
   isDbUnreachableLine,
+  isBuildLine,
   isDiskLine,
   isErrorLine,
   isOomLine,
   isPoolExhaustionLine,
+  isPortConflictLine,
+  isProxyDownLine,
+  isTlsLine,
   isUpstreamSlowLine,
   listenedPort,
   poolLabel,
@@ -81,7 +85,8 @@ export function extractSignals(
   const nowTs = new Date().toISOString();
   const logs = data.logs ?? [];
   const applets = data.applets ?? [];
-  const add = (s: Signal) => signals.push(s);
+  // The only place where a diagnostics-only kind (ExtraSignalKind) is narrowed to the contract type.
+  const add = (s: Omit<Signal, "kind"> & { kind: DiagSignalKind }) => signals.push({ ...s, kind: s.kind as SignalKind });
 
   // 2. OOM_KILLED: an applet reason, an OOM log line, or an exit event that names OOMKilled / exit code 137
   const oomApplets = applets.filter(
@@ -225,15 +230,27 @@ export function extractSignals(
 
   // 6. DEPLOY_REGRESSION: a real release finished at most `deployRegressionMs` before the first error.
   // Synthetic or unknown-source releases never count (EVALUATION M1).
+  // Restarts of the local harness are not releases (EVALUATION R4). The release must bring the symptom in:
+  // no error before its finishedAt and at least one after it.
   const onset = errorOnset(data);
   if (onset) {
     const onsetMs = Date.parse(onset);
+    const errorTimes = [
+      ...logs.filter((l) => isErrorLine(l.text)).map((l) => Date.parse(l.ts)),
+      ...(data.probes ?? []).filter((p) => p.status === null || p.status >= 500).map((p) => Date.parse(p.ts)),
+    ].filter((t) => Number.isFinite(t));
     let best: { release: NonNullable<CollectedEvidence["releases"]>[number]; diff: number } | null = null;
     for (const r of data.releases ?? []) {
+      if (r.kind === "restart") continue;
       if (r.state !== "READY" || !r.finishedAt) continue;
       if (r.source !== "liara" && r.source !== "local") continue;
-      const diff = onsetMs - Date.parse(r.finishedAt);
-      if (diff >= 0 && diff <= thresholds.deployRegressionMs && (!best || diff < best.diff)) best = { release: r, diff };
+      const finishedMs = Date.parse(r.finishedAt);
+      const diff = onsetMs - finishedMs;
+      if (!(diff >= 0 && diff <= thresholds.deployRegressionMs)) continue;
+      const errorsBefore = errorTimes.some((t) => t < finishedMs);
+      const errorsAfter = errorTimes.some((t) => t >= finishedMs);
+      if (errorsBefore || !errorsAfter) continue;
+      if (!best || diff < best.diff) best = { release: r, diff };
     }
     if (best) {
       const evId = addEv(
@@ -348,6 +365,58 @@ export function extractSignals(
       evidence: evIds,
       strength: clamp(0.7 + 0.1 * poolLines.length),
       data: { lines: poolLines.length, pattern: poolLabel(poolLines[0].text) ?? "connection" },
+    });
+  }
+
+  // 11b. PROXY_UPSTREAM_DOWN: nginx-style 502 (connect() failed, upstream closed). The app behind the proxy is the cause.
+  const proxyLogs = logs.filter((l) => isProxyDownLine(l.text));
+  if (proxyLogs.length > 0) {
+    const evIds = proxyLogs.slice(0, 2).map((l) => addEv("log", l.ts, `Proxy error: ${l.text.slice(0, 120)}`, l.id));
+    add({
+      kind: "PROXY_UPSTREAM_DOWN",
+      firstSeen: proxyLogs[0].ts,
+      detail_fa: "پروکسی نتوانست به برنامه برسد (502): برنامه یا بالا نیست، یا اتصال در میانه‌ی پاسخ بسته شده است.",
+      evidence: evIds,
+      strength: clamp(0.7 + 0.1 * proxyLogs.length),
+      data: { lines: proxyLogs.length },
+    });
+  }
+
+  // 11c. PORT_CONFLICT (EADDRINUSE), TLS_ERROR and BUILD_ERROR: each is decisive on its own, from one log line.
+  const conflictLogs = logs.filter((l) => isPortConflictLine(l.text));
+  if (conflictLogs.length > 0) {
+    const evIds = conflictLogs.slice(0, 2).map((l) => addEv("log", l.ts, `Port in use: ${l.text.slice(0, 120)}`, l.id));
+    add({
+      kind: "PORT_CONFLICT",
+      firstSeen: conflictLogs[0].ts,
+      detail_fa: "پورت مورد نیاز برنامه از قبل در اختیار پروسه‌ی دیگری است (EADDRINUSE).",
+      evidence: evIds,
+      strength: 1,
+      data: { lines: conflictLogs.length },
+    });
+  }
+  const tlsLogs = logs.filter((l) => isTlsLine(l.text));
+  if (tlsLogs.length > 0) {
+    const evIds = tlsLogs.slice(0, 2).map((l) => addEv("log", l.ts, `TLS error: ${l.text.slice(0, 120)}`, l.id));
+    add({
+      kind: "TLS_ERROR",
+      firstSeen: tlsLogs[0].ts,
+      detail_fa: "اعتبارسنجی گواهی TLS شکست خورده است (زنجیره‌ی گواهی ناقص، منقضی یا خودامضا).",
+      evidence: evIds,
+      strength: 1,
+      data: { lines: tlsLogs.length },
+    });
+  }
+  const buildLogs = logs.filter((l) => isBuildLine(l.text));
+  if (buildLogs.length > 0) {
+    const evIds = buildLogs.slice(0, 2).map((l) => addEv("log", l.ts, `Build error: ${l.text.slice(0, 120)}`, l.id));
+    add({
+      kind: "BUILD_ERROR",
+      firstSeen: buildLogs[0].ts,
+      detail_fa: "ساخت یا اجرای برنامه به‌خاطر ماژول یا فایل گم‌شده، یا خطای کامپایل، شکست خورده است.",
+      evidence: evIds,
+      strength: clamp(0.8 + 0.05 * buildLogs.length),
+      data: { lines: buildLogs.length },
     });
   }
 

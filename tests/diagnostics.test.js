@@ -11,6 +11,7 @@ const {
   failingPathsFromEvidence,
   fixBriefToMarkdown,
   createFixBrief,
+  isMitigationOnlyRemediation,
 } = require("../build/diagnostics/src/index.js");
 
 // ---------- helpers ----------
@@ -863,5 +864,178 @@ describe("Golden evidence from the simulated target: CPU saturation (scenario-4)
     const busy = Array.from({ length: 100 }, (_, i) => (i >= 2 ? 95 : 10));
     const { signals: more } = extractSignals(simCpuEvidence({ cpu: busy.map((pct, i) => ({ ts: at(0, i), pct })) }));
     assert.ok(more.some((s) => s.kind === "CPU_SATURATION"), "a sustained run does");
+  });
+});
+
+// ---------- round 2 (EVALUATION §5): ranking by directness, verification, new patterns ----------
+
+const tops = (incident) => incident.hypotheses.map((h) => h.id);
+const kindsOf = (incident) => incident.signals.map((s) => s.kind);
+const upstreamLines = () => [
+  L(0, "upstream timeout after 2000ms: GET https://api.payment.example/v1/rates", 30),
+  L(0, "[access] GET /api/checkout 504 2001ms", 31),
+];
+
+describe("R4: a harness restart is not a release, and the release must bring the symptom in", () => {
+  const restartRelease = { id: "rel_sim_restart", state: "READY", createdAt: at(-1), finishedAt: at(0, 10), source: "local", kind: "restart" };
+  const sameRelease = { ...restartRelease, kind: undefined };
+
+  it("upstream timeouts after a harness restart rank upstream_slow above deploy_regression", () => {
+    const data = ev({
+      releases: [restartRelease],
+      logs: upstreamLines(),
+      probes: [P(0, "/api/checkout", 504, 2100, 31)],
+    });
+    const incident = DiagnosticEngine.diagnose(data, "سایت خیلی کند شده");
+    assert.ok(!kindsOf(incident).includes("DEPLOY_REGRESSION"), "a restart is not a release");
+    assert.strictEqual(incident.hypotheses[0].id, "hyp_upstream_slow", tops(incident).join(", "));
+  });
+
+  it("without the restart mark the same timing is still a regression (the mark is what changes the answer)", () => {
+    const data = ev({ releases: [sameRelease], logs: upstreamLines(), probes: [P(0, "/api/checkout", 504, 2100, 31)] });
+    const incident = DiagnosticEngine.diagnose(data, "سایت خیلی کند شده");
+    assert.ok(kindsOf(incident).includes("DEPLOY_REGRESSION"));
+  });
+
+  it("a restart never produces DEPLOY_REGRESSION, even with errors that follow it", () => {
+    const { signals } = extractSignals(ev({ releases: [restartRelease], logs: [L(0, "Error: boom", 30)] }));
+    assert.ok(!signals.some((s) => s.kind === "DEPLOY_REGRESSION"));
+  });
+
+  it("errors that were already there before the release are not the release's symptom", () => {
+    const { signals } = extractSignals(ev({
+      releases: [{ id: "rel_9", state: "READY", createdAt: at(-1), finishedAt: at(0, 10), source: "liara" }],
+      logs: [L(-5, "Error: earlier failure", 0), L(0, "Error: boom", 30)],
+    }));
+    assert.ok(!signals.some((s) => s.kind === "DEPLOY_REGRESSION"), "errors before finishedAt rule the release out");
+  });
+
+  it("an incident whose only remediations are handoffs is diagnosed, never awaiting_approval without cards", () => {
+    const incident = DiagnosticEngine.diagnose(ev({ logs: upstreamLines(), probes: [P(0, "/api/checkout", 504, 2100, 31)] }), "سایت خیلی کند شده");
+    assert.strictEqual(incident.hypotheses[0].id, "hyp_upstream_slow");
+    assert.strictEqual(incident.status, "diagnosed");
+  });
+
+  it("an incident with an L2 remediation is awaiting_approval", () => {
+    const incident = DiagnosticEngine.diagnose(GOLDEN[0].evidence, SYMPTOM);
+    assert.strictEqual(incident.status, "awaiting_approval");
+  });
+});
+
+describe("R5: verification discriminates (port, leak, CPU under load)", () => {
+  it("port_mismatch is verified by a public path that answers below 500, not by applets_running", () => {
+    const rb = STANDARD_RUNBOOKS.find((r) => r.id === "port_mismatch");
+    assert.deepStrictEqual(rb.remediations[0].successCriteria.kind, "probe_not_5xx");
+    const before = takeSnapshot(ev({ probes: [P(0, "/", null, 3, 1)] }), ["/"]);
+    const down = takeSnapshot(ev({ probes: [P(1, "/", 502, 3, 1)] }), ["/"]);
+    const up404 = takeSnapshot(ev({ probes: [P(1, "/", 404, 3, 1)] }), ["/"]);
+    const refused = takeSnapshot(ev({ probes: [P(1, "/", 0, 3, 1)] }), ["/"]);
+    const criteria = [{ kind: "probe_not_5xx", path: "/" }];
+    assert.strictEqual(verify(before, down, criteria).passed, false, "502 from the proxy is not success");
+    assert.strictEqual(verify(before, refused, criteria).passed, false, "status 0 is not success");
+    const ok = verify(before, up404, criteria);
+    assert.strictEqual(ok.passed, true, "a 404 means the app answers");
+    assert.strictEqual(ok.outcome, "resolved");
+  });
+
+  it("a restart for a leak is verified as mitigated, and the text points to the Fix Brief", () => {
+    assert.strictEqual(isMitigationOnlyRemediation("oom_leak", "app_restart"), true);
+    assert.strictEqual(isMitigationOnlyRemediation("leak_no_oom", "app_restart"), true);
+    assert.strictEqual(isMitigationOnlyRemediation("port_mismatch", "app_update_port"), false);
+    const snap = takeSnapshot(ev({ applets: [{ state: "running", restarts: 0 }] }));
+    const result = verify(snap, snap, [{ kind: "restarts_stable" }], { mitigationOnly: true });
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.outcome, "mitigated");
+    assert.ok(/Fix Brief/.test(result.summary_fa) && /کد/.test(result.summary_fa));
+  });
+
+  it("cpu_below_pct with underLoad fails on an idle sample and passes only when the sample was taken under load", () => {
+    const rb = STANDARD_RUNBOOKS.find((r) => r.id === "cpu_saturation");
+    const criterion = rb.remediations[0].successCriteria;
+    assert.strictEqual(criterion.underLoad, true);
+    const idle = ev({ cpu: Array.from({ length: 10 }, (_, i) => ({ ts: at(0, i), pct: 5 })) });
+    const before = takeSnapshot(idle);
+    assert.strictEqual(verify(before, takeSnapshot(idle), [criterion]).passed, false, "idle sample is not proof");
+    assert.strictEqual(verify(before, takeSnapshot(idle, [], { underLoad: true }), [criterion]).passed, true);
+  });
+});
+
+describe("R9: patterns and golden top hypotheses", () => {
+  it("Java OutOfMemoryError (heap space and GC overhead phrasings) is OOM_KILLED", () => {
+    for (const text of [
+      "java.lang.OutOfMemoryError: Java heap space",
+      "Exception in thread \"main\" java.lang.OutOfMemoryError: GC overhead limit exceeded",
+    ]) {
+      const { signals } = extractSignals(ev({ logs: [L(0, text, 5)] }));
+      assert.ok(signals.some((s) => s.kind === "OOM_KILLED"), text);
+    }
+  });
+
+  it("a bare Killed line and an exit code 137 are OOM_KILLED", () => {
+    assert.ok(extractSignals(ev({ logs: [L(0, "Killed", 5)] })).signals.some((s) => s.kind === "OOM_KILLED"));
+    assert.ok(extractSignals(ev({ logs: [L(0, "container exited with code 137", 5)] })).signals.some((s) => s.kind === "OOM_KILLED"));
+  });
+
+  it("nginx 502 (connect refused or upstream closed) is PROXY_UPSTREAM_DOWN and gives app_unreachable_proxy with a restart", () => {
+    for (const text of [
+      '2026/10/22 14:01:02 [error] 1#1: *5 connect() failed (111: Connection refused) while connecting to upstream, upstream: "http://127.0.0.1:3000/"',
+      "2026/10/22 14:01:02 [error] 1#1: *6 upstream prematurely closed connection while reading response header from upstream",
+    ]) {
+      const incident = DiagnosticEngine.diagnose(ev({ logs: [L(0, text, 5)], probes: [P(0, "/", 502, 4, 6)] }), "سایت ۵۰۲ می‌دهد");
+      assert.ok(kindsOf(incident).includes("PROXY_UPSTREAM_DOWN"), text);
+      assert.strictEqual(incident.hypotheses[0].id, "hyp_app_unreachable_proxy", tops(incident).join(", "));
+      assert.ok(incident.hypotheses[0].remediations.some((r) => r.action === "app_restart"));
+      assert.ok(!kindsOf(incident).includes("UPSTREAM_SLOW"), "a proxy failure is not an upstream timeout");
+    }
+  });
+
+  it("EADDRINUSE is PORT_CONFLICT and gives port_conflict on top", () => {
+    const incident = DiagnosticEngine.diagnose(ev({
+      logs: [L(0, "Error: listen EADDRINUSE: address already in use :::3000", 5)],
+      probes: [P(0, "/", null, 3, 6)],
+    }), "بالا نمیاد");
+    assert.strictEqual(incident.hypotheses[0].id, "hyp_port_conflict", tops(incident).join(", "));
+  });
+
+  it("a certificate verification error is TLS_ERROR and gives tls_error on top, as a code handoff", () => {
+    const incident = DiagnosticEngine.diagnose(ev({
+      logs: [L(0, "Error: unable to verify the first certificate", 5)],
+    }), "خطای https");
+    assert.strictEqual(incident.hypotheses[0].id, "hyp_tls_error", tops(incident).join(", "));
+    assert.deepStrictEqual(incident.hypotheses[0].remediations.map((r) => r.action), ["coding_agent_handoff"]);
+  });
+
+  it("a Python traceback ending in DoesNotExist (no 'Error' in the name) is APP_EXCEPTION", () => {
+    const logs = [
+      L(0, "Traceback (most recent call last):", 1),
+      L(0, '  File "/app/shop/views.py", line 42, in item', 1),
+      L(0, "app.models.DoesNotExist: Item matching query does not exist.", 2),
+    ];
+    const { signals } = extractSignals(ev({ logs }));
+    const exc = signals.find((s) => s.kind === "APP_EXCEPTION");
+    assert.ok(exc, "the exception is recognised");
+    assert.ok(/DoesNotExist/.test(exc.detail_fa), "the detail names the exception");
+  });
+
+  it("'Cannot find module' and a Next.js module-not-found error are BUILD_ERROR with build_error on top", () => {
+    const node = DiagnosticEngine.diagnose(ev({ logs: [L(0, "Error: Cannot find module 'express'", 5)] }), "دیپلوی خطا داد");
+    assert.strictEqual(node.hypotheses[0].id, "hyp_build_error", tops(node).join(", "));
+    const next = DiagnosticEngine.diagnose(ev({
+      logs: [L(0, "Failed to compile.", 4), L(0, "Module not found: Can't resolve './components/Header'", 5)],
+    }), "دیپلوی خطا داد");
+    assert.strictEqual(next.hypotheses[0].id, "hyp_build_error", tops(next).join(", "));
+    assert.strictEqual(next.status, "diagnosed", "a build error has only a code handoff");
+  });
+
+  it("an error with no matching runbook gives unclassified_errors (low confidence, Fix Brief attached), not nothing", () => {
+    const incident = DiagnosticEngine.diagnose(ev({ logs: [L(0, "FATAL: widget registry corrupted (code W-17)", 5)] }), "خطا");
+    assert.strictEqual(incident.hypotheses.length, 1);
+    const h = incident.hypotheses[0];
+    assert.strictEqual(h.id, "hyp_unclassified_errors");
+    assert.strictEqual(h.confidence, "low");
+    assert.ok(h.evidence_for.length > 0 && incident.evidence.some((e) => e.id === h.evidence_for[0]));
+    assert.strictEqual(incident.status, "diagnosed");
+    const brief = createFixBrief(incident, ev({ logs: [L(0, "FATAL: widget registry corrupted (code W-17)", 5)] }), (t) => t);
+    assert.ok(brief.evidence.length > 0, "the Fix Brief carries the error excerpt");
   });
 });

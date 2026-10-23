@@ -36,6 +36,15 @@ const AWS_ACCESS_KEY_REGEX = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
 const AWS_SECRET_KEY_REGEX = /(aws_secret_access_key["']?\s*[:=]\s*["']?)[A-Za-z0-9/+=]{16,}/gi;
 const GITHUB_TOKEN_REGEX = /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
 const ENV_LINE_REGEX = /^([A-Z0-9_]*(?:SECRET|PASSWORD|TOKEN|KEY|PASS|AUTH)[A-Z0-9_]*)=(.+)$/gim;
+// EVALUATION R10: provider keys and credentials that appear in logs, config dumps and HTTP headers.
+const STRIPE_KEY_REGEX = /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}\b/g;
+const SLACK_TOKEN_REGEX = /\bxox[abposr]-[A-Za-z0-9-]{8,}/g;
+const GOOGLE_API_KEY_REGEX = /\bAIza[0-9A-Za-z_-]{20,}/g;
+const ASSIGNED_SECRET_REGEX = /((?:^|[\s?&;,{(])(?:password|passwd|pwd|secret|client_secret|api[_-]?key|apikey|token|auth)\s*=\s*)[^\s&"';,}]+/gi;
+const JSON_SECRET_REGEX = /("(?:password|passwd|pwd|secret|client_secret|apiKey|api_key|apikey|access_token|refresh_token|token)"\s*:\s*")((?:[^"\\]|\\.)*)"/gi;
+const X_API_KEY_HEADER_REGEX = /(\bx-api-key\s*:\s*)[^\s"',;]+/gi;
+const COOKIE_HEADER_REGEX = /(\b(?:Set-)?Cookie\s*:\s*)[^\r\n]+/gi;
+const SOKAN_SESSION_REGEX = /\bsokan_session=[^\s;,"']+/g;
 
 export interface SecretRedactorOptions {
   /** Known secret values (for example from .env). Values shorter than 8 characters are ignored. */
@@ -94,6 +103,16 @@ export class SecretRedactor {
     // 1. PEM private key blocks (complete, then truncated)
     redacted = redacted.replace(PEM_PRIVATE_KEY_BLOCK, "[REDACTED_PRIVATE_KEY]");
     redacted = redacted.replace(PEM_PRIVATE_KEY_TRUNCATED, "[REDACTED_PRIVATE_KEY]");
+
+    // 1b. Cookies (whole header value), session cookie, JSON and assigned secrets, x-api-key headers
+    redacted = redacted.replace(COOKIE_HEADER_REGEX, (_match, prefix) => `${prefix}[REDACTED_COOKIE]`);
+    redacted = redacted.replace(SOKAN_SESSION_REGEX, "sokan_session=[REDACTED]");
+    redacted = redacted.replace(JSON_SECRET_REGEX, (_match, prefix) => `${prefix}[REDACTED]"`);
+    redacted = redacted.replace(ASSIGNED_SECRET_REGEX, (_match, prefix) => `${prefix}[REDACTED]`);
+    redacted = redacted.replace(X_API_KEY_HEADER_REGEX, (_match, prefix) => `${prefix}[REDACTED_API_KEY]`);
+    redacted = redacted.replace(STRIPE_KEY_REGEX, "[REDACTED_API_KEY]");
+    redacted = redacted.replace(SLACK_TOKEN_REGEX, "[REDACTED_TOKEN]");
+    redacted = redacted.replace(GOOGLE_API_KEY_REGEX, "[REDACTED_API_KEY]");
 
     // 2. URI user:password. The password may contain '@'; it extends to the last '@' before the host.
     redacted = redacted.replace(URI_CREDENTIAL_REGEX, (_match, protocol, user) => `${protocol}${user}:[REDACTED]@`);

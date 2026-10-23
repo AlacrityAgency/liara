@@ -1,5 +1,6 @@
-import type { Signal, SignalKind } from "@sokan/contracts";
+import type { Signal } from "@sokan/contracts";
 import type { DiagnosticRunbook } from "./runbooks";
+import type { DiagSignalKind } from "./types";
 
 /** Normalise Persian/Arabic text: Persian digits to ASCII, Arabic letter variants, ZWNJ and tatweel removed. */
 export function normaliseText(input: string): string {
@@ -90,7 +91,7 @@ export interface ScoreContext {
  */
 export function scoreRunbook(
   rb: DiagnosticRunbook,
-  byKind: ReadonlyMap<SignalKind, Signal>,
+  byKind: ReadonlyMap<DiagSignalKind, Signal>,
   ctx: ScoreContext
 ): ScoredRunbook {
   const requiredOk = rb.requiredSignals.every((k) => byKind.has(k));
@@ -99,7 +100,7 @@ export function scoreRunbook(
 
   const supporting: Signal[] = [];
   let logit = rb.prior;
-  for (const [kind, weight] of Object.entries(rb.weights) as Array<[SignalKind, number]>) {
+  for (const [kind, weight] of Object.entries(rb.weights) as Array<[DiagSignalKind, number]>) {
     const sig = byKind.get(kind);
     if (!sig) continue;
     supporting.push(sig);
@@ -107,7 +108,7 @@ export function scoreRunbook(
   }
 
   const contradicting: Signal[] = [];
-  for (const [kind, weight] of Object.entries(rb.against) as Array<[SignalKind, number]>) {
+  for (const [kind, weight] of Object.entries(rb.against) as Array<[DiagSignalKind, number]>) {
     const sig = byKind.get(kind);
     if (!sig) continue;
     contradicting.push(sig);

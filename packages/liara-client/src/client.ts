@@ -89,11 +89,12 @@ interface PlanRaw {
 export interface PlanSummary {
   planID: string;
   hourlyPrice: number;
-  /** hourly price * 720 hours, as in the official CLI. */
+  /** hourly price * 720 hours, as in the official CLI. Prices are in Toman. */
   monthlyPrice: number;
   available: boolean;
   region?: string;
   cpu?: number;
+  /** RAM in MB. The account API reports RAM.amount in GB (the CLI prints it as GB). */
   ram?: number;
   volume?: number;
 }
@@ -171,6 +172,8 @@ export interface DeployEvent {
 
 export interface DeployOptions {
   port: number;
+  /** Env pairs sent in the release body, as the CLI does (`envs`). Optional. */
+  envs?: Record<string, string>;
   /** Liara platform, e.g. node, python, docker, static. Sent as `type`. */
   platform: string;
   onEvent?: (event: DeployEvent) => void;
@@ -343,7 +346,7 @@ export class LiaraClient {
           available: raw.available === true,
           region: typeof raw.region === "string" ? raw.region : undefined,
           cpu: typeof raw.CPU?.amount === "number" ? raw.CPU.amount : undefined,
-          ram: typeof raw.RAM?.amount === "number" ? raw.RAM.amount : undefined,
+          ram: typeof raw.RAM?.amount === "number" ? Math.round(raw.RAM.amount * 1024) : undefined,
           volume: typeof raw.volume === "number" ? raw.volume : undefined,
         };
       });
@@ -531,6 +534,7 @@ export class LiaraClient {
       sourceID: upload.data.sourceID,
       port: opts.port,
       type: opts.platform,
+      ...(opts.envs ? { envs: opts.envs } : {}),
     });
     if (!created.ok || !created.data) {
       return fail("RELEASE_CREATE_FAILED", created.error ?? unknownError("ایجاد ریلیز بدون شناسه پاسخ داد."));

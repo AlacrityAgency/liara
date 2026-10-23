@@ -1,5 +1,4 @@
-import type { SuccessCriterion } from "@sokan/contracts";
-import type { CollectedEvidence } from "./types";
+import type { CollectedEvidence, DiagCriterion } from "./types";
 import { clusterErrors } from "./logparse";
 import { percentile } from "./stats";
 import { isErrorLine } from "./patterns";
@@ -19,22 +18,44 @@ export interface VerifySnapshot {
   restarts: number | null;
   releaseState: string | null;
   diskUsedPct: number | null;
+  /** True when the CPU samples were taken while requests were driven (cpu_below_pct with underLoad). */
+  underLoad: boolean;
 }
 
 export type CheckValue = number | string | boolean | null;
 
 export interface VerifyCheck {
-  criterion: SuccessCriterion;
+  criterion: DiagCriterion;
   passed: boolean;
   before: CheckValue;
   after: CheckValue;
   detail_fa: string;
 }
 
+/**
+ * resolved: every criterion passed. mitigated: they passed, but the remediation only relieves the symptom
+ * (a restart for a leak). unresolved: at least one failed. The executor sets the incident status from this.
+ */
+export type VerifyOutcome = "resolved" | "mitigated" | "unresolved";
+
 export interface VerifyResult {
   passed: boolean;
+  outcome: VerifyOutcome;
   checks: VerifyCheck[];
   summary_fa: string;
+}
+
+export interface VerifyOptions {
+  /** Set for remediations that only mitigate (see isMitigationOnlyRemediation). A pass then reads "mitigated". */
+  mitigationOnly?: boolean;
+}
+
+/**
+ * A restart fixes a leak only for a while. Such remediations end as "mitigated", and the result text
+ * points to the Fix Brief for the real fix (EVALUATION R5).
+ */
+export function isMitigationOnlyRemediation(runbookId: string | undefined, action: string): boolean {
+  return action === "app_restart" && (runbookId === "oom_leak" || runbookId === "leak_no_oom");
 }
 
 /** Western digits to Persian, decimal point to Persian decimal separator. */
@@ -56,7 +77,11 @@ function windowMinutes(data: CollectedEvidence): number {
  * Summarise collected evidence into the comparable state used by verify().
  * `probePaths` lists the paths that must be checked; a path that was not probed is reported as null.
  */
-export function takeSnapshot(evidence: CollectedEvidence, probePaths: readonly string[] = []): VerifySnapshot {
+export function takeSnapshot(
+  evidence: CollectedEvidence,
+  probePaths: readonly string[] = [],
+  options: { underLoad?: boolean } = {}
+): VerifySnapshot {
   const logs = evidence.logs ?? [];
   const errorLines = logs.filter((l) => isErrorLine(l.text)).length;
   const errorRatePerMin = Math.round((errorLines / windowMinutes(evidence)) * 100) / 100;
@@ -113,6 +138,7 @@ export function takeSnapshot(evidence: CollectedEvidence, probePaths: readonly s
     restarts,
     releaseState: newestRelease?.state ?? null,
     diskUsedPct: evidence.disk?.usedPct ?? null,
+    underLoad: options.underLoad === true,
   };
 }
 
@@ -126,24 +152,50 @@ const isOk = (status: number | null | undefined): boolean =>
 export function verify(
   before: VerifySnapshot,
   after: VerifySnapshot,
-  successCriteria: readonly SuccessCriterion[]
+  successCriteria: readonly DiagCriterion[],
+  options: VerifyOptions = {}
 ): VerifyResult {
   if (successCriteria.length === 0) {
-    return { passed: false, checks: [], summary_fa: "معیار موفقیتی برای راستی‌آزمایی تعریف نشده است." };
+    return { passed: false, outcome: "unresolved", checks: [], summary_fa: "معیار موفقیتی برای راستی‌آزمایی تعریف نشده است." };
   }
 
   const checks: VerifyCheck[] = successCriteria.map((c) => evaluate(c, before, after));
   const passed = checks.every((c) => c.passed);
   const details = checks.map((c) => c.detail_fa);
   const failed = checks.filter((c) => !c.passed).map((c) => c.detail_fa);
-  const summary_fa = passed
-    ? `راستی‌آزمایی موفق: ${details.join("؛ ")}.`
-    : `راستی‌آزمایی ناموفق: ${failed.join("؛ ")}.`;
-  return { passed, checks, summary_fa };
+  if (!passed) {
+    return { passed, outcome: "unresolved", checks, summary_fa: `راستی‌آزمایی ناموفق: ${failed.join("؛ ")}.` };
+  }
+  if (options.mitigationOnly) {
+    return {
+      passed,
+      outcome: "mitigated",
+      checks,
+      summary_fa:
+        `راستی‌آزمایی موفق اما فقط کاهش موقت: ${details.join("؛ ")}. ` +
+        "ری‌استارت علت نشت حافظه را برطرف نمی‌کند؛ اصلاح واقعی در کد است (Fix Brief).",
+    };
+  }
+  return { passed, outcome: "resolved", checks, summary_fa: `راستی‌آزمایی موفق: ${details.join("؛ ")}.` };
 }
 
-function evaluate(c: SuccessCriterion, before: VerifySnapshot, after: VerifySnapshot): VerifyCheck {
+function evaluate(c: DiagCriterion, before: VerifySnapshot, after: VerifySnapshot): VerifyCheck {
   switch (c.kind) {
+    case "probe_not_5xx": {
+      // Public path check for port and proxy problems: any answer below 500 means the app is reachable (EVALUATION R5).
+      const a = after.probe.find((p) => p.path === c.path);
+      const b = before.probe.find((p) => p.path === c.path);
+      const status = a?.status;
+      const passed = typeof status === "number" && status > 0 && status < 500;
+      const detail = !a || status === null || status === undefined
+        ? `${c.path} پروب نشد`
+        : passed
+          ? `${c.path} پاسخ ${fa(status)} داد؛ برنامه از پروکسی در دسترس است`
+          : status === 0
+            ? `${c.path} پاسخی نگرفت؛ اتصال هنوز برقرار نیست`
+            : `${c.path} هنوز پاسخ ${fa(status)} می‌دهد؛ انتظار پاسخ زیر ۵۰۰`;
+      return { criterion: c, passed, before: b?.status ?? null, after: status ?? null, detail_fa: detail };
+    }
     case "probe_ok": {
       const a = after.probe.find((p) => p.path === c.path);
       const b = before.probe.find((p) => p.path === c.path);
@@ -196,10 +248,14 @@ function evaluate(c: SuccessCriterion, before: VerifySnapshot, after: VerifySnap
     case "cpu_below_pct": {
       const a = after.cpuP95Pct;
       const b = before.cpuP95Pct;
-      const passed = a !== null && a < c.pct;
+      // underLoad: an idle sample proves nothing about a CPU hot path, so it fails the check (EVALUATION R5).
+      const idleSample = c.underLoad === true && after.underLoad !== true;
+      const passed = a !== null && a < c.pct && !idleSample;
       const detail = a === null
         ? "داده‌ی پردازنده در دسترس نیست"
-        : `p95 پردازنده ${passed ? `از ${fa(b)}٪ به ${fa(a)}٪ رسید` : `${fa(a)}٪ است؛ هدف زیر ${fa(c.pct)}٪`}`;
+        : idleSample
+          ? "نمونه‌ی پردازنده بدون بار گرفته شده است؛ این معیار باید هنگام اعمال بار سنجیده شود"
+          : `p95 پردازنده ${passed ? `از ${fa(b)}٪ به ${fa(a)}٪ رسید` : `${fa(a)}٪ است؛ هدف زیر ${fa(c.pct)}٪`}`;
       return { criterion: c, passed, before: b, after: a, detail_fa: detail };
     }
     case "disk_used_below": {

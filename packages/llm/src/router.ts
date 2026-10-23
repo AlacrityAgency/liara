@@ -45,6 +45,22 @@ export interface RouteOptions {
   apps?: string[];
 }
 
+// Delete needs an app object, a delete verb and an imperative in the same sentence (EVALUATION R13).
+// Polite particles ("رو", "لطفا") and possessive suffixes ("اپمو") are accepted; negations never are.
+const APP_OBJECT = /^(?:اپ|اپلیکیشن|برنامه|پروژه)(?:ام|امو|م|مو|ت|تو|ش|شو|ی)?$/;
+const DELETE_VERB = /^(?:حذف|پاک)/;
+const IMPERATIVE = ["کن", "کنید", "کنین", "بکن", "بکنید", "کنم", "کنی"];
+const NEGATION = ["نه", "نکن", "نکنید", "نکنین", "نمیخوام", "نمیخواهم", "نخوام"];
+const PARTICLES = ["رو", "را", "لطفا", "الان", "همین", "دیگه", "ممنون"];
+
+function isAppDeleteSentence(tokens: string[]): boolean {
+  const words = tokens.filter((w) => !PARTICLES.includes(w));
+  if (words.some((w) => NEGATION.includes(w))) return false;
+  return words.some((w) => DELETE_VERB.test(w))
+    && words.some((w) => APP_OBJECT.test(w))
+    && words.some((w) => IMPERATIVE.includes(w));
+}
+
 function hasWord(tokens: string[], words: string[]): boolean {
   return words.some((w) => tokens.includes(w));
 }
@@ -94,9 +110,7 @@ export class IntentRouter {
     }
 
     // Destructive delete needs an explicit app/project object and an imperative verb.
-    if (/حذف|پاک/.test(t) && hasWord(tokens, ["اپ", "اپلیکیشن", "برنامه", "پروژه"]) && /(کن|کنم|کنی|کنید|کنین|بکن)$/.test(t)) {
-      return match("app_delete", {}, 0.85);
-    }
+    if (isAppDeleteSentence(tokens)) return match("app_delete", {}, 0.85);
 
     if (/دامنه|ایرنیک|domain|irnic/.test(t)) {
       const domain = tokens.find((w) => /^[a-z0-9-]+\.[a-z.]+$/.test(w));

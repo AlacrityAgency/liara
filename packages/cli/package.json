@@ -1,0 +1,17 @@
+{
+  "name": "@sokan/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sokan terminal CLI: connect a project folder to Liara in a few Persian prompts (dependency-free)",
+  "main": "../../build/cli/src/index.js",
+  "bin": {
+    "sokan": "bin/sokan.js"
+  },
+  "dependencies": {
+    "@sokan/analyzer": "*",
+    "@sokan/contracts": "*",
+    "@sokan/diagnostics": "*",
+    "@sokan/liara-client": "*",
+    "@sokan/policy": "*"
+  }
+}

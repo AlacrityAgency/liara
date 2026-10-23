@@ -1,6 +1,7 @@
 "use strict";
 // Executor (WEB_CONTRACT: Executor rules). Parameters come only from the approval record. Every mutating
 // action is wrapped in: before-snapshot -> execute -> wait for running -> observe -> after-snapshot -> verify.
+// Live executors act on params.project (the approved app), never on whatever app the console has selected.
 
 const crypto = require("crypto");
 const { verify } = require("../../../build/diagnostics/src/index.js");
@@ -25,6 +26,16 @@ const ok = (detail_fa) => ({ ok: true, detail_fa });
 const fail = (what_fa, why_fa, next_fa) => ({ ok: false, error: { what_fa, why_fa, next_fa } });
 const liaraFail = (r, what_fa) => fail(r.error?.what_fa || what_fa, r.error?.why_fa || "", r.error?.next_fa || "");
 const newReleaseId = () => `rel_${crypto.randomBytes(3).toString("hex")}`;
+
+/** The app named by the approved params. Live actions without it are refused, never sent to a guessed app. */
+function approvedProject(p) {
+  return typeof p.project === "string" && p.project.length > 0 ? p.project : null;
+}
+const PROJECT_MISSING = () => fail(
+  "اپ مشخص نیست",
+  "نام اپ در تأییدیه ثبت نشده است؛ اجرا متوقف شد.",
+  "درخواست تأیید تازه بسازید.",
+);
 
 async function waitReady(core, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
@@ -51,12 +62,17 @@ function deployStage(core, stage, message_fa, line) {
   core.emit("deploy_progress", { stage, message_fa, ...(line ? { line } : {}) });
 }
 
-async function deploySim(core, p) {
+/** Default progress sink: the console's deploy_progress event. Simple mode passes its own sink. */
+function defaultProgress(core) {
+  return (stage, message_fa, line) => deployStage(core, stage, message_fa, line);
+}
+
+async function deploySim(core, p, progress = defaultProgress(core)) {
   core.app.deploying = true;
   const started = new Date().toISOString();
   try {
     for (const [stage, text] of [["pack", "بسته‌بندی شبیه‌سازی‌شده"], ["upload", "آپلود شبیه‌سازی‌شده"], ["release", "ایجاد ریلیز محلی"], ["build", "ساخت محلی"]]) {
-      deployStage(core, stage, SIM(text));
+      progress(stage, SIM(text));
       await sleep(250);
     }
     for (const v of p.variables || []) core.setAppEnv(v.key, v.value);
@@ -68,7 +84,7 @@ async function deploySim(core, p) {
     core.app.deleted = false;
     await simRestart(core);
     const state = core.runtime.running && (await core.probeNow("/health")).status === 200 ? "READY" : "UNHEALTHY";
-    deployStage(core, "ready", SIM(state === "READY" ? "نسخه‌ی محلی آماده است" : "نسخه‌ی محلی پاسخ نداد"));
+    progress("ready", SIM(state === "READY" ? "نسخه‌ی محلی آماده است" : "نسخه‌ی محلی پاسخ نداد"));
     core.addRelease({
       id: newReleaseId(),
       state,
@@ -80,40 +96,58 @@ async function deploySim(core, p) {
       envSnapshot: { ...core.app.appEnvs },
     });
     return state === "READY"
-      ? ok(SIM("نسخه‌ی جدید روی اپ شبیه‌سازی‌شده مستقر شد."))
+      ? { ok: true, detail_fa: SIM("نسخه‌ی جدید روی اپ شبیه‌سازی‌شده مستقر شد."), releaseID: undefined }
       : fail(SIM("استقرار انجام شد ولی برنامه پاسخ نداد."), "پورت یا متغیرهای برنامه را بررسی کنید.", "پیش از تأیید دوباره، پورت و env را اصلاح کنید.");
   } finally {
     core.app.deploying = false;
   }
 }
 
-async function deployLive(core, p) {
-  const name = core.appName();
+/**
+ * Live deploy of the approved app: getApp -> createApp only on 404 (any other error stops here) -> updateEnvs ->
+ * deploy (pack, upload, release with envs in the body, build logs). `progress(stage, message_fa, line?)` gets every step.
+ */
+async function deployLive(core, p, progress = defaultProgress(core)) {
+  const name = approvedProject(p);
+  if (!name) return PROJECT_MISSING();
   const liara = core.liara;
   const existing = await liara.getApp(name);
   if (!existing.ok) {
-    const created = await liara.createApp({ name, planID: p.planID, platform: p.platform || "node" });
+    if (existing.error?.code !== "NOT_FOUND") return liaraFail(existing, "خواندن اپ از لیارا انجام نشد");
+    progress("create", "ساخت اپ جدید در لیارا");
+    const created = await liara.createApp({
+      name,
+      planID: p.planID,
+      platform: p.platform || "node",
+      ...(p.bundlePlanID ? { bundlePlanID: p.bundlePlanID } : {}),
+    });
     if (!created.ok) return liaraFail(created, "ساخت اپ انجام نشد");
   }
-  if (p.variables && p.variables.length > 0) {
-    const set = await liara.updateEnvs(name, p.variables);
+  const variables = Array.isArray(p.variables) ? p.variables : [];
+  if (variables.length > 0) {
+    progress("envs", "تنظیم متغیرهای محیطی");
+    const set = await liara.updateEnvs(name, variables);
     if (!set.ok) return liaraFail(set, "تنظیم متغیرها انجام نشد");
   }
-  const dir = core.env.SOKAN_PROJECT_DIR || DEMO_DIR;
+  const envs = variables.length > 0 ? Object.fromEntries(variables.map((v) => [v.key, v.value])) : undefined;
+  const dir = p.dir || core.env.SOKAN_PROJECT_DIR || DEMO_DIR;
   const result = await liara.deploy(name, dir, {
     port: Number(p.port) || 3000,
     platform: p.platform || "node",
-    onEvent: (ev) => deployStage(core, ev.stage, ev.message_fa, ev.line),
+    ...(envs ? { envs } : {}),
+    onEvent: (ev) => progress(ev.stage, ev.message_fa, ev.line),
   });
   if (!result.ok) return fail(result.error?.what_fa || "استقرار انجام نشد", result.error?.why_fa || "", result.error?.next_fa || "");
-  return ok(`نسخه‌ی جدید منتشر شد (ریلیز ${result.releaseID || "نامشخص"}).`);
+  return { ok: true, detail_fa: `نسخه‌ی جدید منتشر شد (ریلیز ${result.releaseID || "نامشخص"}).`, releaseID: result.releaseID };
 }
 
-/** Maps a tool name to its executor. Each entry is (core, params) -> {ok, detail_fa} | {ok:false, error}. */
+/** Maps a tool name to its executor. Each entry is (core, params, meta) -> {ok, detail_fa} | {ok:false, error}. */
 const EXECUTORS = {
-  async app_restart(core) {
+  async app_restart(core, p) {
     if (core.isLive()) {
-      const r = await core.liara.restartApp(core.appName());
+      const app = approvedProject(p);
+      if (!app) return PROJECT_MISSING();
+      const r = await core.liara.restartApp(app);
       return r.ok ? ok("ری‌استارت درخواست شد و برنامه دوباره بالا می‌آید.") : liaraFail(r, "ری‌استارت انجام نشد");
     }
     await simRestart(core);
@@ -123,7 +157,9 @@ const EXECUTORS = {
   async app_update_envs(core, p) {
     const keys = p.variables.map((v) => v.key).join("، ");
     if (core.isLive()) {
-      const r = await core.liara.updateEnvs(core.appName(), p.variables);
+      const app = approvedProject(p);
+      if (!app) return PROJECT_MISSING();
+      const r = await core.liara.updateEnvs(app, p.variables);
       return r.ok ? ok(`متغیرهای ${keys} تنظیم شد؛ مقدارها در گزارش نمایش داده نمی‌شوند.`) : liaraFail(r, "تنظیم متغیرها انجام نشد");
     }
     for (const v of p.variables) core.setAppEnv(v.key, v.value);
@@ -133,7 +169,9 @@ const EXECUTORS = {
 
   async app_resize_plan(core, p) {
     if (core.isLive()) {
-      const r = await core.liara.resizePlan(core.appName(), p.planID);
+      const app = approvedProject(p);
+      if (!app) return PROJECT_MISSING();
+      const r = await core.liara.resizePlan(app, p.planID);
       return r.ok ? ok(`پلن به ${p.planID} تغییر کرد.`) : liaraFail(r, "تغییر پلن انجام نشد");
     }
     core.app.planID = p.planID;
@@ -144,7 +182,9 @@ const EXECUTORS = {
 
   async app_update_port(core, p) {
     if (core.isLive()) {
-      const r = await core.liara.updatePort(core.appName(), p.port);
+      const app = approvedProject(p);
+      if (!app) return PROJECT_MISSING();
+      const r = await core.liara.updatePort(app, p.port);
       return r.ok ? ok(`پورت اپ به ${p.port} تغییر کرد.`) : liaraFail(r, "تغییر پورت انجام نشد");
     }
     core.app.port = p.port;
@@ -154,7 +194,9 @@ const EXECUTORS = {
 
   async app_scale(core, p) {
     if (core.isLive()) {
-      const r = await core.liara.scaleApp(core.appName(), p.scale);
+      const app = approvedProject(p);
+      if (!app) return PROJECT_MISSING();
+      const r = await core.liara.scaleApp(app, p.scale);
       return r.ok ? ok(`تعداد نمونه‌ها به ${p.scale} تنظیم شد.`) : liaraFail(r, "تغییر تعداد نمونه‌ها انجام نشد");
     }
     if (p.scale === 0) {
@@ -166,9 +208,11 @@ const EXECUTORS = {
     return ok(SIM(`تعداد نمونه‌ها به ${p.scale} تنظیم شد.`));
   },
 
-  async app_delete(core) {
+  async app_delete(core, p) {
     if (core.isLive()) {
-      const r = await core.liara.deleteApp(core.appName());
+      const app = approvedProject(p);
+      if (!app) return PROJECT_MISSING();
+      const r = await core.liara.deleteApp(app);
       return r.ok ? ok("اپ حذف شد.") : liaraFail(r, "حذف اپ انجام نشد");
     }
     await core.runtime.stop();
@@ -176,13 +220,15 @@ const EXECUTORS = {
     return ok(SIM("اپ شبیه‌سازی‌شده حذف شد."));
   },
 
-  async deploy(core, p) {
-    if (core.isLive()) return deployLive(core, p);
-    return deploySim(core, p);
+  async deploy(core, p, meta = {}) {
+    if (core.isLive()) return deployLive(core, p, meta.progress);
+    return deploySim(core, p, meta.progress);
   },
 
   async release_rollback(core, p) {
     if (core.isLive()) {
+      const app = approvedProject(p);
+      if (!app) return PROJECT_MISSING();
       const current = await core.liara.getRelease(p.releaseId);
       const image = current.ok ? current.data?.release?.image : undefined;
       if (!image) {
@@ -192,7 +238,7 @@ const EXECUTORS = {
           LIARA_LIMITS.find((l) => l.id === "dedicated_rollback").workaround_fa,
         );
       }
-      const r = await core.liara.createRelease(core.appName(), { image, port: core.app.port || 3000, type: "docker" });
+      const r = await core.liara.createRelease(app, { image, port: core.app.port || 3000, type: "docker" });
       return r.ok ? ok("ریلیز قبلی دوباره منتشر شد.") : liaraFail(r, "بازگشت به ریلیز قبلی انجام نشد");
     }
     const target = core.releases.find((r) => r.id === p.releaseId && r.envSnapshot);
@@ -212,9 +258,11 @@ const EXECUTORS = {
 
   async dns_zone_setup(core, p) {
     if (!core.isLive()) return fail(SIM("تنظیم دامنه فقط در حالت زنده انجام می‌شود."), "حالت شبیه‌سازی به DNS لیارا دسترسی ندارد.", "حالت زنده را با LIARA_API_TOKEN فعال کنید.");
+    const app = approvedProject(p);
+    if (!app) return PROJECT_MISSING();
     const zone = await core.liara.createZone(p.domain);
     if (!zone.ok) return liaraFail(zone, "ساخت Zone انجام نشد");
-    const added = await core.liara.addDomain(p.domain, core.appName());
+    const added = await core.liara.addDomain(p.domain, app);
     return added.ok ? ok(`دامنه ${p.domain} به Zone و اپ اضافه شد؛ تغییر NS را در ایرنیک انجام دهید.`) : liaraFail(added, "افزودن دامنه انجام نشد");
   },
 };
@@ -223,11 +271,12 @@ const WAIT_SETTLE_MS_LIVE = 90000;
 const OBSERVE_MS_LIVE = 60000;
 const OBSERVE_ROUNDS_SIM = 6;
 
-async function settle(core) {
+async function settle(core, project) {
   if (core.isLive()) {
+    const app = project || core.appName();
     const deadline = Date.now() + WAIT_SETTLE_MS_LIVE;
     while (Date.now() < deadline) {
-      const r = await core.liara.getApplets(core.appName());
+      const r = await core.liara.getApplets(app);
       const applets = r.ok ? (Array.isArray(r.data) ? r.data : r.data?.applets || []) : [];
       if (applets.some((a) => String(a.state).toLowerCase() === "running")) return;
       await sleep(3000);
@@ -274,23 +323,28 @@ function step(core, id, status) {
   setPipeline(core, id, steps);
 }
 
-/** Runs one approved action end to end. Called only after approvals.authorize() has accepted it. */
-async function executeApproved(core, approvalId) {
+/**
+ * Runs one approved action end to end. authorize() must accept the approval first; the function returns
+ * {ok, resolved, tool, approvalId, detail_fa?, error?, verification}. `opts.onStep(stage, message_fa)` is optional.
+ */
+async function executeApproved(core, approvalId, opts = {}) {
+  const report = opts.onStep || (() => undefined);
   const meta = core.pendingMeta.get(approvalId) || {};
   const record = core.approvals.get(approvalId);
-  if (!record) return;
+  if (!record) return { ok: false, resolved: false, tool: null, approvalId, error: { what_fa: "تأیید پیدا نشد", why_fa: "", next_fa: "" } };
   const tool = record.tool;
   const params = core.approvals.getApprovedParams(approvalId);
-  if (!params) return;
+  if (!params) return { ok: false, resolved: false, tool, approvalId, error: { what_fa: "تأیید هنوز فعال نیست", why_fa: "", next_fa: "" } };
   const auth = core.approvals.authorize(tool, params, approvalId, "user");
   if (!auth.ok) {
     core.pendingMeta.delete(approvalId);
+    const error = { what_fa: "اجرا متوقف شد", why_fa: `کد رد: ${auth.code}`, next_fa: "درخواست تأیید جدید بسازید." };
     core.emit("action_result", {
       approvalId, tool, ok: false, mode: core.mode(),
       result_fa: `${core.mode() === "simulated" ? "(شبیه‌سازی محلی) " : ""}اجرا به‌دلیل عدم تطابق تأیید متوقف شد.`,
-      error: { what_fa: "اجرا متوقف شد", why_fa: `کد رد: ${auth.code}`, next_fa: "درخواست تأیید جدید بسازید." },
+      error,
     });
-    return;
+    return { ok: false, resolved: false, tool, approvalId, error };
   }
   const mode = core.mode();
   const started = Date.now();
@@ -319,8 +373,9 @@ async function executeApproved(core, approvalId) {
 
   const actionStart = new Date().toISOString();
   let exec;
+  report("fix", "در حال اعمال تغییر");
   try {
-    exec = await EXECUTORS[tool](core, params, meta);
+    exec = await EXECUTORS[tool](core, params, { ...meta, progress: undefined });
   } catch (err) {
     exec = fail("اجرای اقدام با خطا متوقف شد.", core.redact(err && err.message ? err.message : "خطای ناشناخته"), "وضعیت را بررسی کنید و دوباره تلاش کنید.");
   }
@@ -331,12 +386,13 @@ async function executeApproved(core, approvalId) {
   let after = null;
   if (exec.ok && criteria.length > 0) {
     step(core, "settle", "running");
-    await settle(core);
+    await settle(core, params.project);
     step(core, "settle", "done");
     step(core, "observe", "running");
     await observe(core, probePaths);
     step(core, "observe", "done");
     step(core, "verify", "running");
+    report("verify", "در حال راستی‌آزمایی");
     after = await snapshot(core, actionStart, probePaths);
     verification = verify(before.snapshot, after.snapshot, criteria);
     step(core, "verify", verification.passed ? "done" : "failed");
@@ -386,7 +442,15 @@ async function executeApproved(core, approvalId) {
     ...(exec.ok ? {} : { error: exec.error }),
   });
   core.emit("state", {});
-  return { ok: exec.ok, resolved };
+  return {
+    ok: exec.ok,
+    resolved,
+    tool,
+    approvalId,
+    detail_fa: resultText,
+    ...(exec.ok ? {} : { error: exec.error }),
+    verification,
+  };
 }
 
 /** Schedules a delayed run for an approved approval (L3 waits out the cancel window). */
@@ -399,4 +463,7 @@ module.exports = {
   DEFAULT_CRITERIA,
   executeApproved,
   scheduleApproved,
+  deployLive,
+  deploySim,
+  approvedProject,
 };

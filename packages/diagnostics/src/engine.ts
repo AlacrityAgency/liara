@@ -1,5 +1,7 @@
-import type { Incident, Hypothesis, FixBrief, Snapshot, Signal, SignalKind, Remediation } from "@sokan/contracts";
-import type { CollectedEvidence } from "./types";
+import type {
+  Incident, Hypothesis, FixBrief, Snapshot, Signal, IncidentStatus, Remediation, EvidenceRef, SuccessCriterion,
+} from "@sokan/contracts";
+import type { CollectedEvidence, DiagIncidentStatus, DiagSignalKind } from "./types";
 import { extractSignals, errorOnset } from "./extractors";
 import { flagInstructions } from "./flags";
 import { STANDARD_RUNBOOKS } from "./runbooks";
@@ -7,6 +9,8 @@ import { scoreRunbook, type ScoredRunbook } from "./scoring";
 import { createFixBrief as buildFixBrief, type Redactor } from "./brief";
 import { failingPathsFromEvidence, takeSnapshot as takeVerifySnapshot } from "./verifier";
 import { percentile } from "./stats";
+import { clusterErrors } from "./logparse";
+import { isErrorLine } from "./patterns";
 
 const DEFAULT_SYMPTOM = "خطا یا کندی در سرویس";
 const MAX_HYPOTHESES = 3;
@@ -30,7 +34,7 @@ function resolveTemplate<T>(value: T, ctx: Record<string, string>): T {
   return value;
 }
 
-function placeholderContext(data: CollectedEvidence, byKind: ReadonlyMap<SignalKind, Signal>): Record<string, string> {
+function placeholderContext(data: CollectedEvidence, byKind: ReadonlyMap<DiagSignalKind, Signal>): Record<string, string> {
   const ctx: Record<string, string> = {
     failingPath: failingPathsFromEvidence(data)[0] ?? "/",
     poolSignature: "connection",
@@ -56,7 +60,8 @@ function toHypothesis(s: ScoredRunbook, ctx: Record<string, string>): Hypothesis
     cost_fa: r.cost_fa,
     impact_fa: r.impact_fa,
     rollback_fa: r.rollback_fa,
-    successCriteria: resolveTemplate(r.successCriteria, ctx),
+    // probe_not_5xx and underLoad are diagnostics-only extensions; see types.ts.
+    successCriteria: resolveTemplate(r.successCriteria, ctx) as SuccessCriterion,
   }));
   return {
     id: `hyp_${rb.id}`,
@@ -74,6 +79,45 @@ function toHypothesis(s: ScoredRunbook, ctx: Record<string, string>): Hypothesis
   };
 }
 
+/**
+ * Used when error lines exist but no runbook matched (EVALUATION R9). The top error cluster becomes the evidence,
+ * and the only remediation is a Fix Brief for the Coding Agent, so no approval card is created.
+ */
+function unclassifiedHypothesis(data: CollectedEvidence, evidence: EvidenceRef[]): Hypothesis | null {
+  const logs = data.logs ?? [];
+  const errorLines = logs.filter((l) => isErrorLine(l.text));
+  if (errorLines.length === 0) return null;
+  const top = clusterErrors(logs)[0];
+  const summary = top
+    ? `Exception cluster: ${top.signature} (count: ${top.count})`
+    : `Error line: ${errorLines[0].text.slice(0, 140)}`;
+  const id = `ev_${evidence.length + 1}`;
+  evidence.push({ id, type: "log", ts: top?.firstTs ?? errorLines[0].ts, summary, raw_ref: top?.sampleIds[0] ?? errorLines[0].id });
+  const signature = (top ? top.errorType : errorLines[0].text).trim().slice(0, 60);
+  return {
+    id: "hyp_unclassified_errors",
+    title_fa: "خطای دسته‌بندی‌نشده در لاگ",
+    explain_fa: "در لاگ خطا دیده می‌شود، اما با هیچ الگوی شناخته‌شده تطبیق نیافت. Fix Brief با خطای پرتکرار ساخته شد تا کد بررسی شود.",
+    confidence: "low",
+    score: 0.3,
+    evidence_for: [id],
+    evidence_against: [],
+    confirming_test: "خواندن stack trace یا پیام خطای پرتکرار و تطبیق آن با کد",
+    remediations: [{
+      id: "rem_unclassified_errors_0",
+      action: "coding_agent_handoff",
+      params: {},
+      riskLevel: "L0",
+      label_fa: "Fix Brief برای خطای دسته‌بندی‌نشده",
+      successCriteria_fa: "خطای پرتکرار دیگر در لاگ دیده نشود",
+      cost_fa: "بدون هزینه",
+      impact_fa: "بدون تغییر در برنامه‌ی زنده",
+      rollback_fa: "—",
+      successCriteria: { kind: "no_error_signature", signature },
+    }],
+  };
+}
+
 export class DiagnosticEngine {
   /**
    * Run the SRE diagnostic pipeline (WHITEPAPER §8.2):
@@ -83,7 +127,7 @@ export class DiagnosticEngine {
     const { signals, evidence, missingEvidence } = extractSignals(evidenceData);
     const flags = flagInstructions(evidenceData.logs ?? []);
 
-    const byKind = new Map<SignalKind, Signal>();
+    const byKind = new Map<DiagSignalKind, Signal>();
     for (const s of signals) if (!byKind.has(s.kind)) byKind.set(s.kind, s);
 
     const onsetIso = evidenceData.symptomStart ?? errorOnset(evidenceData);
@@ -106,6 +150,10 @@ export class DiagnosticEngine {
       .slice(0, MAX_HYPOTHESES)
       .map((s) => toHypothesis(s, ctx));
 
+    if (hypotheses.length === 0) {
+      const unclassified = unclassifiedHypothesis(evidenceData, evidence);
+      if (unclassified) hypotheses.push(unclassified);
+    }
     if (hypotheses.length === 0 && signals.length > 0) {
       hypotheses.push({
         id: "hyp_generic",
@@ -121,6 +169,14 @@ export class DiagnosticEngine {
 
     const incidentId = `inc_${Date.now().toString(36)}`;
 
+    // "awaiting_approval" only when a card can exist. Handoffs and L0 reads never create one (EVALUATION R4).
+    const actionable = hypotheses.some((h) =>
+      h.remediations.some((r) => r.action !== "coding_agent_handoff" && r.riskLevel !== "L0")
+    );
+    const status: DiagIncidentStatus = actionable
+      ? "awaiting_approval"
+      : hypotheses.length > 0 ? "diagnosed" : "investigating";
+
     return {
       id: incidentId,
       app: evidenceData.app?.name ?? "unknown-app",
@@ -134,7 +190,8 @@ export class DiagnosticEngine {
       hypotheses,
       rejected,
       actions: [],
-      status: hypotheses.length > 0 ? "awaiting_approval" : "investigating",
+      // DiagIncidentStatus adds "diagnosed" and "mitigated" to the contract; see types.ts.
+      status: status as IncidentStatus,
     };
   }
 

@@ -24,7 +24,17 @@ const POOL_PATTERN =
 
 const REDIS = /redis|ioredis|(?<!\d)6379(?!\d)/i;
 
-const OOM = /out of memory|oomkilled|javascript heap out of memory/i;
+// OOM wording: Node, Java (both phrasings), container exit codes and the shell's "Killed" line (EVALUATION R9).
+const OOM = /out of memory|oomkilled|javascript heap out of memory|OutOfMemoryError|Java heap space|GC overhead limit exceeded|^\s*Killed\s*$|(?:exit(?:ed)?|code|status)\s*(?:with\s+)?(?:code\s+)?137\b/i;
+
+// Reverse-proxy failures: nginx cannot reach the app behind it (502). Kept apart from upstream timeouts.
+const PROXY_DOWN = /connect\(\) failed|upstream prematurely closed|no live upstreams|502 bad gateway|\b502\b.*upstream/i;
+
+const PORT_CONFLICT = /EADDRINUSE|address already in use/i;
+
+const TLS = /unable to verify the first certificate|CERT_HAS_EXPIRED|certificate has expired|self[- ]signed certificate|UNABLE_TO_VERIFY_LEAF_SIGNATURE|SSL certificate problem/i;
+
+const BUILD = /Cannot find module|Module not found|Failed to compile|Build error occurred|ERR_MODULE_NOT_FOUND|next build failed/i;
 
 // "TypeError", "PrismaClientInitializationError" and "local.ERROR" end in Error/Exception/ERROR, so the
 // suffix is matched without a leading word boundary.
@@ -57,6 +67,22 @@ export function isOomLine(text: string): boolean {
 
 export function isUpstreamSlowLine(text: string): boolean {
   return /upstream.*timeout|gateway timeout|slow response from|(?:ETIMEDOUT|timed? ?out).*(?:https?:\/\/|:443\b|:80\b|\bapi\.)/i.test(text);
+}
+
+export function isProxyDownLine(text: string): boolean {
+  return PROXY_DOWN.test(text);
+}
+
+export function isPortConflictLine(text: string): boolean {
+  return PORT_CONFLICT.test(text);
+}
+
+export function isTlsLine(text: string): boolean {
+  return TLS.test(text);
+}
+
+export function isBuildLine(text: string): boolean {
+  return BUILD.test(text);
 }
 
 export function isDiskLine(text: string): boolean {

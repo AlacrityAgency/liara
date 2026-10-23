@@ -11,7 +11,8 @@ const RESTART_RE = /restart|crash|exit code|back-?off|OOMKilled/i;
 const LISTEN_RE = /listening (?:on|at)\s+(?:port\s+)?\d{2,5}/i;
 // Periodic memory line printed by chaos-shop: "[mem] rss=54MB heap=5MB".
 const MEM_LINE_RE = /^\[mem\] rss=(\d+)MB/;
-let planCache = { at: 0, plans: null };
+// Plan catalogue per Liara client object: swapping the client (connect/disconnect) starts a fresh cache.
+const planCache = new WeakMap();
 
 /** Keeps the points of one process generation: the one with the most points, ties go to the newer one. */
 function mostPointsGeneration(points) {
@@ -43,10 +44,12 @@ function newestGeneration(points) {
 
 /** Live plan catalogue, cached for ten minutes. Null when the API call fails. */
 async function livePlans(core) {
-  if (planCache.plans && Date.now() - planCache.at < 600000) return planCache.plans;
-  const r = await core.liara.getPlans();
+  const client = core.liara;
+  const cached = planCache.get(client);
+  if (cached && Date.now() - cached.at < 600000) return cached.plans;
+  const r = await client.getPlans();
   if (!r.ok) return null;
-  planCache = { at: Date.now(), plans: r.data };
+  planCache.set(client, { at: Date.now(), plans: r.data });
   return r.data;
 }
 

@@ -34,7 +34,9 @@ const NODE_LOC = /((?:[A-Za-z]:)?[^\s()]+?):(\d+):(\d+)\)?\s*$/;
 const PY_START = /^Traceback \(most recent call last\):/;
 const PY_FRAME = /^\s*File "([^"]+)", line (\d+)/;
 // Accepts dotted module paths: "django.db.utils.OperationalError", "psycopg2.OperationalError".
-const PY_ERR = /^((?:[a-z_][\w]*\.)*[A-Za-z_]\w*(?:Error|Exception|Interrupt|Exit)):\s?(.*)$/;
+// Any dotted name at the start of the last traceback line: "KeyError", "django.db.utils.OperationalError",
+// "app.models.DoesNotExist" (EVALUATION R9: the name need not end in Error).
+const PY_ERR = /^((?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*):\s?(.*)$/;
 const PHP_FATAL = /PHP (?:Fatal error|Warning|Parse error):\s+(?:Uncaught\s+)?([^\s:]+)?:?\s*(.*?) in (\S+?)(?::| on line )(\d+)/;
 const LARAVEL = /local\.ERROR:\s*(.*)/;
 const GO_PANIC = /^panic:\s*(.*)$/;

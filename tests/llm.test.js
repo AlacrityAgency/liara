@@ -455,3 +455,24 @@ describe("Persian formatters", () => {
     assert.ok(text.includes("فرم را پر کنید."));
   });
 });
+
+describe("R13. Offline router: delete phrasing and symptoms that must never roll back", () => {
+  const { IntentRouter } = require("../build/llm/src/index.js");
+
+  it("Persian delete sentences with particles and possessive suffixes map to app_delete", () => {
+    for (const sentence of ["حذف کن اپ رو", "اپمو پاک کن", "اپلیکیشن رو حذف کن لطفا", "برنامه‌ام را پاک کن"]) {
+      assert.strictEqual(IntentRouter.route(sentence).tool, "app_delete", sentence);
+    }
+  });
+
+  it("a negated delete is not app_delete", () => {
+    assert.notStrictEqual(IntentRouter.route("حذف نکن اپ رو").tool, "app_delete");
+  });
+
+  it("«سایتم کنده» goes to sre_investigate and never to a rollback or delete", () => {
+    const r = IntentRouter.route("سایتم کنده");
+    assert.strictEqual(r.tool, "sre_investigate");
+    assert.notStrictEqual(r.tool, "release_rollback");
+    assert.notStrictEqual(r.tool, "app_delete");
+  });
+});

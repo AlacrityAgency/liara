@@ -19,8 +19,10 @@ const { handleChat } = require("./lib/chat");
 const { makeToolRunner, newTurn, selectPlan } = require("./lib/tools");
 const { scheduleApproved } = require("./lib/executor");
 const { runScenario } = require("./lib/scenarios");
+const simple = require("./lib/simple");
 
 const PUBLIC_DIR = path.join(__dirname, "public");
+const ADVANCED_DIR = path.join(PUBLIC_DIR, "advanced");
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -43,6 +45,7 @@ const host = process.env.SOKAN_HOST || "127.0.0.1";
 const port = Number(process.env.SOKAN_PORT || process.env.PORT || 4000);
 const token = process.env.SOKAN_CONSOLE_TOKEN || crypto.randomBytes(16).toString("hex");
 const core = createCore({ token, chaosPort: process.env.CHAOS_PORT });
+simple.initSimple(core);
 
 function unauthorized(res) {
   sendJson(res, 401, { error: "UNAUTHORIZED", message_fa: "ابتدا لینکی را که در ترمینال چاپ شده باز کنید." });
@@ -66,11 +69,15 @@ function serveStatic(req, res, url) {
   } catch {
     return sendJson(res, 400, { error: "BAD_PATH" });
   }
+  // "/" is the Simple page; "/advanced" and "/advanced/*" are the full console (public/advanced).
+  const isAdvanced = rel === "/advanced" || rel.startsWith("/advanced/");
+  const base = isAdvanced ? ADVANCED_DIR : PUBLIC_DIR;
+  if (isAdvanced) rel = rel === "/advanced" ? "/" : rel.slice("/advanced".length);
   if (rel === "/") rel = "/index.html";
-  const file = path.normalize(path.join(PUBLIC_DIR, rel));
-  if (!file.startsWith(PUBLIC_DIR + path.sep)) return sendJson(res, 404, { error: "NOT_FOUND" });
+  const file = path.normalize(path.join(base, rel));
+  if (!file.startsWith(base + path.sep)) return sendJson(res, 404, { error: "NOT_FOUND" });
   let target = file;
-  if (!fs.existsSync(target) || fs.statSync(target).isDirectory()) target = path.join(PUBLIC_DIR, "index.html");
+  if (!fs.existsSync(target) || fs.statSync(target).isDirectory()) target = path.join(base, "index.html");
   if (!fs.existsSync(target)) return sendJson(res, 404, { error: "NOT_FOUND" });
   const type = MIME[path.extname(target)] || "application/octet-stream";
   sendText(res, 200, fs.readFileSync(target), type);
@@ -134,9 +141,33 @@ async function postApproval(id, action, body, res) {
   return sendJson(res, 200, { ok, approval: core.approvals.get(id) });
 }
 
+/** Simple mode routes (SIMPLE_SPEC contract). Same gates as the other POST routes: CSRF, JSON, body size. */
+async function simpleRoute(req, res, url, via) {
+  if (req.method === "GET") {
+    const out = await simple.handleGet(core, url.pathname);
+    return sendJson(res, out.status, out.body);
+  }
+  if (req.method !== "POST") {
+    return sendJson(res, 405, { ok: false, error: { code: "METHOD_NOT_ALLOWED", what_fa: "این درخواست پشتیبانی نمی‌شود", why_fa: "", next_fa: "" } });
+  }
+  const denied = checkPost(req, via);
+  if (denied) return sendJson(res, denied.status, { ok: false, error: { code: denied.code, what_fa: denied.message_fa, why_fa: "", next_fa: "" } });
+  const raw = await readBody(req);
+  if (!raw.ok) {
+    res.setHeader("Connection", "close");
+    return sendJson(res, raw.status, { ok: false, error: { code: raw.status === 413 ? "BODY_TOO_LARGE" : "BAD_REQUEST", what_fa: raw.status === 413 ? "بدنه‌ی درخواست بیش از ۱ مگابایت است." : "درخواست نامعتبر است.", why_fa: "", next_fa: "" } });
+  }
+  const parsed = parseJsonObject(raw.text);
+  if (!parsed.ok) return sendJson(res, 400, { ok: false, error: { code: "INVALID_JSON", what_fa: "بدنه‌ی درخواست JSON معتبر نیست.", why_fa: "", next_fa: "" } });
+  const out = await simple.handlePost(core, url.pathname, parsed.value);
+  return sendJson(res, out.status, out.body);
+}
+
 async function apiRoute(req, res, url, via) {
   const parts = url.pathname.split("/").filter(Boolean); // ["api", ...]
   const method = req.method;
+
+  if (url.pathname.startsWith("/api/simple/")) return simpleRoute(req, res, url, via);
 
   if (method === "GET" && url.pathname === "/api/state") return sendJson(res, 200, core.buildState());
   if (method === "GET" && url.pathname === "/api/events") return openEvents(req, res);
@@ -256,6 +287,7 @@ server.listen(port, host, () => {
     console.warn(`[SOKAN_WEB] WARNING: console is listening on ${host}; anyone who can reach it with the token can approve actions.`);
   }
   if (core.mode() === "simulated") console.log("[SOKAN_WEB] mode=simulated (no LIARA_API_TOKEN): actions run against the local chaos-shop only.");
+  if (core.simple && core.liara.isLive && !core.envLiara) console.log("[SOKAN_WEB] Liara token loaded from the saved credentials file.");
   core.start();
 });
 

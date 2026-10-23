@@ -5,6 +5,8 @@ import type { AuditRecord } from "@sokan/contracts";
 import { resolveSecretString } from "./tokens";
 
 const GENESIS = "0".repeat(64);
+/** Signed summary of the chain, rewritten on every append. Lets verify() see a truncated tail. */
+export const AUDIT_HEAD_FILE = "audit.head";
 
 export type AuditMode = "live" | "simulated";
 
@@ -16,13 +18,24 @@ export interface AuditEntry extends AuditRecord {
 
 export type AuditInput = Omit<AuditEntry, "seq" | "timestamp" | "previousRecordHash" | "recordHash">;
 
-export type VerifyResult = { ok: true } | { ok: false; brokenAt: number };
+/**
+ * CHAIN_BROKEN (no reason field): a record fails its MAC or link. TRUNCATED: records at the end were removed.
+ * HEAD_INVALID: audit.head fails its MAC. HEAD_MISMATCH: the record at the head position was replaced.
+ */
+export type AuditFailureReason = "TRUNCATED" | "HEAD_INVALID" | "HEAD_MISMATCH";
+export type VerifyResult = { ok: true } | { ok: false; brokenAt: number; reason?: AuditFailureReason };
 
 export interface AuditLedgerOptions {
   /** Append-only JSONL file. Existing content is loaded on start and the chain continues from it. */
   filePath?: string;
   /** HMAC key. Falls back to SOKAN_SECRET. Required when filePath is set. */
   key?: string;
+}
+
+interface HeadRecord {
+  count: number;
+  lastHash: string;
+  hmac: string;
 }
 
 /** The authenticated fields of a record. previousRecordHash is covered by the MAC input as well. */
@@ -36,6 +49,10 @@ function fieldsOf(r: Omit<AuditEntry, "recordHash">): unknown[] {
 /** h_i = HMAC(k, h_{i-1} || entry_i) — WHITEPAPER §10.4. */
 function macOf(key: Buffer, previous: string, fields: unknown[]): string {
   return crypto.createHmac("sha256", key).update(`${previous}\n${JSON.stringify(fields)}`).digest("hex");
+}
+
+function headMacOf(key: Buffer, count: number, lastHash: string): string {
+  return crypto.createHmac("sha256", key).update(`AUDIT_HEAD\n${count}\n${lastHash}`).digest("hex");
 }
 
 function sameHex(a: string, b: unknown): boolean {
@@ -62,7 +79,8 @@ function readRecords(filePath: string): { records: AuditEntry[]; malformedAt?: n
 
 /**
  * Append-only, HMAC-chained audit log — WHITEPAPER §7.4 and §10.4.
- * Without filePath it is in memory (tests, demo). With filePath every record is appended to a JSONL file.
+ * Without filePath it is in memory (tests, demo). With filePath every record is appended to a JSONL file
+ * and `audit.head` (count, last hash, MAC) is rewritten, so removing records from the end is detected.
  * If the file on disk fails verification at start, the ledger stays readable but refuses to append.
  */
 export class AuditLedger {
@@ -71,7 +89,7 @@ export class AuditLedger {
   readonly isEphemeralKey: boolean;
   private readonly key: Buffer;
   private readonly records: AuditEntry[] = [];
-  /** seq of the first broken record found in the file at start, if any. */
+  /** seq of the first broken record (or the head position) found in the file at start, if any. */
   private loadBrokenAt?: number;
 
   constructor(opts: AuditLedgerOptions = {}) {
@@ -87,10 +105,21 @@ export class AuditLedger {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
       const loaded = readRecords(this.filePath);
       this.records.push(...loaded.records);
-      const chain = this.checkChain(loaded.records);
-      if (!chain.ok) this.loadBrokenAt = chain.brokenAt;
-      else if (loaded.malformedAt !== undefined) this.loadBrokenAt = loaded.malformedAt;
+      const state = this.checkLoaded(loaded);
+      if (!state.ok) {
+        this.loadBrokenAt = state.brokenAt;
+        // Surfaced at startup so the operator sees it without opening the console (EVALUATION R10).
+        console.warn(
+          `[SOKAN_AUDIT] WARNING: audit log ${state.reason ?? "CHAIN_BROKEN"} at seq ${state.brokenAt}; ` +
+          "the console keeps reading it but refuses to append until the log is restored."
+        );
+      }
     }
+  }
+
+  /** True when the file on disk verified at start and no tampering was seen since. */
+  get startupOk(): boolean {
+    return this.loadBrokenAt === undefined;
   }
 
   append(entry: AuditInput): AuditEntry {
@@ -117,6 +146,7 @@ export class AuditLedger {
     if (this.filePath) {
       // Write before updating memory: a failed write must not leave a record the file does not have.
       fs.appendFileSync(this.filePath, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+      this.writeHead(this.records.length + 1, record.recordHash);
     }
     this.records.push(record);
     return record;
@@ -128,16 +158,19 @@ export class AuditLedger {
 
   /**
    * With `records`: verifies that array. Without it: verifies the file on disk when filePath is set
-   * (so edits made after start are caught), otherwise the in-memory records.
+   * (so edits made after start are caught, including a truncated tail), otherwise the in-memory records.
    */
   verify(records?: readonly AuditEntry[]): VerifyResult {
     if (records) return this.checkChain(records);
-    if (this.filePath) {
-      const loaded = readRecords(this.filePath);
-      if (loaded.malformedAt !== undefined) return { ok: false, brokenAt: loaded.malformedAt };
-      return this.checkChain(loaded.records);
-    }
+    if (this.filePath) return this.checkLoaded(readRecords(this.filePath));
     return this.checkChain(this.records);
+  }
+
+  private checkLoaded(loaded: { records: AuditEntry[]; malformedAt?: number }): VerifyResult {
+    if (loaded.malformedAt !== undefined) return { ok: false, brokenAt: loaded.malformedAt };
+    const chain = this.checkChain(loaded.records);
+    if (!chain.ok) return chain;
+    return this.checkHead(loaded.records);
   }
 
   private checkChain(records: readonly AuditEntry[]): VerifyResult {
@@ -150,5 +183,39 @@ export class AuditLedger {
       prev = recordHash;
     }
     return { ok: true };
+  }
+
+  /** Compares the signed head with the file. A missing head (logs written before it existed) is not an error. */
+  private checkHead(records: readonly AuditEntry[]): VerifyResult {
+    const headPath = this.headPath();
+    if (!headPath || !fs.existsSync(headPath)) return { ok: true };
+    let head: HeadRecord | undefined;
+    try {
+      head = JSON.parse(fs.readFileSync(headPath, "utf8")) as HeadRecord;
+    } catch {
+      head = undefined;
+    }
+    const valid = head !== undefined && head !== null && Number.isInteger(head.count) && head.count >= 0
+      && typeof head.lastHash === "string" && sameHex(headMacOf(this.key, head.count, head.lastHash), head.hmac);
+    if (!valid) return { ok: false, brokenAt: records.length + 1, reason: "HEAD_INVALID" };
+    const h = head!;
+    if (records.length < h.count) return { ok: false, brokenAt: records.length + 1, reason: "TRUNCATED" };
+    const atHead = h.count === 0 ? GENESIS : records[h.count - 1]!.recordHash;
+    if (atHead !== h.lastHash) return { ok: false, brokenAt: h.count, reason: "HEAD_MISMATCH" };
+    return { ok: true };
+  }
+
+  private headPath(): string | undefined {
+    return this.filePath ? path.join(path.dirname(this.filePath), AUDIT_HEAD_FILE) : undefined;
+  }
+
+  /** Atomic rewrite (temp file, then rename) so a crash never leaves a half-written head. */
+  private writeHead(count: number, lastHash: string): void {
+    const headPath = this.headPath();
+    if (!headPath) return;
+    const head: HeadRecord = { count, lastHash, hmac: headMacOf(this.key, count, lastHash) };
+    const tmp = `${headPath}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(head), { mode: 0o600 });
+    fs.renameSync(tmp, headPath);
   }
 }

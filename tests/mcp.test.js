@@ -198,3 +198,41 @@ describe("console executor", () => {
     await assert.rejects(exec("app_status", {}), (err) => err.code === "CONSOLE_HTTP_401" && err.message === "CONSOLE_HTTP_401");
   });
 });
+
+describe("bin credentials (EVALUATION R1)", () => {
+  // Runs the bin once: initialize, one L0 tool call, then stdin closes. Returns what the fake console saw.
+  async function runBin(expectedToken, env) {
+    const fake = await startFakeConsole(expectedToken);
+    const child = spawn(process.execPath, [BIN], {
+      env: { PATH: process.env.PATH, ...env, SOKAN_CONSOLE_URL: `http://127.0.0.1:${fake.port}` },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    const lines = readline.createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+    try {
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }) + "\n");
+      await lines.next();
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "app_status", arguments: {} } }) + "\n");
+      await lines.next();
+    } finally {
+      child.stdin.end();
+      child.kill();
+      await new Promise((r) => fake.server.close(r));
+    }
+    return { seen: fake.seen, stderr };
+  }
+
+  it("sends SOKAN_AGENT_TOKEN to the console and never the console token", async () => {
+    const out = await runBin("agent-token-222", { SOKAN_AGENT_TOKEN: "agent-token-222", SOKAN_CONSOLE_TOKEN: "" });
+    assert.ok(out.seen.length > 0);
+    assert.ok(out.seen.every((r) => r.token === "agent-token-222"));
+    assert.ok(!out.stderr.includes("WARNING"));
+  });
+
+  it("falls back to SOKAN_CONSOLE_TOKEN only with a stderr warning", async () => {
+    const out = await runBin("console-secret-333", { SOKAN_CONSOLE_TOKEN: "console-secret-333" });
+    assert.ok(out.seen.every((r) => r.token === "console-secret-333"));
+    assert.match(out.stderr, /WARNING: SOKAN_CONSOLE_TOKEN is used as a fallback/);
+  });
+});

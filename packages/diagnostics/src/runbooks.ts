@@ -1,4 +1,5 @@
-import type { SignalKind, RiskLevel, SuccessCriterion } from "@sokan/contracts";
+import type { RiskLevel } from "@sokan/contracts";
+import type { DiagCriterion, DiagSignalKind } from "./types";
 
 /**
  * One recommended action. `tool` is a policy TOOL_RISK name (packages/policy/src/engine.ts), or
@@ -13,7 +14,7 @@ export interface RunbookRemediation {
   cost_fa: string;
   impact_fa: string;
   rollback_fa: string;
-  successCriteria: SuccessCriterion;
+  successCriteria: DiagCriterion;
   successCriteria_fa: string;
 }
 
@@ -26,13 +27,13 @@ export interface DiagnosticRunbook {
   /** Base log-odds, before any signal. Negative means "needs evidence". */
   prior: number;
   /** Every signal here must be present, otherwise the runbook does not apply (hard requirement). */
-  requiredSignals: SignalKind[];
+  requiredSignals: DiagSignalKind[];
   /** At least one of these must be present, when the list is given. */
-  requiredAny?: SignalKind[];
+  requiredAny?: DiagSignalKind[];
   /** Weight of each supporting or required signal. Contribution = weight * strength. */
-  weights: Partial<Record<SignalKind, number>>;
+  weights: Partial<Record<DiagSignalKind, number>>;
   /** Weight of each contradicting signal. Contribution = -weight * strength (subtracts, never hard-rejects). */
-  against: Partial<Record<SignalKind, number>>;
+  against: Partial<Record<DiagSignalKind, number>>;
   /** Collectors this runbook needs. If one failed, confidence is capped at medium. */
   dependsOn: string[];
   explain_fa: string;
@@ -77,9 +78,9 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
     title_fa: "خرابی پس از انتشار نسخه‌ی جدید",
     title_en: "Regression after the latest release",
     symptoms: ["خطا", "error", "500", "۵۰۰", "دیپلوی", "deploy", "ریلیز", "release", "بعد از آپدیت", "بعد از دیپلوی"],
-    prior: -0.5,
+    prior: -1,
     requiredSignals: ["DEPLOY_REGRESSION"],
-    weights: { DEPLOY_REGRESSION: 2.5, APP_EXCEPTION: 1 },
+    weights: { DEPLOY_REGRESSION: 2, APP_EXCEPTION: 1 },
     // A specific cause (missing env, port) explains the regression better, so it competes here.
     against: { OOM_KILLED: 1, MISSING_ENV: 2.5, PORT_MISMATCH: 2 },
     dependsOn: ["release_list", "logs_get"],
@@ -242,8 +243,8 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
         cost_fa: "هزینه‌ی ماهانه‌ی پلن بالاتر",
         impact_fa: "قطع کوتاه هنگام تغییر پلن",
         rollback_fa: "بازگشت به پلن قبلی",
-        successCriteria: { kind: "cpu_below_pct", pct: 70 },
-        successCriteria_fa: "p95 مصرف CPU پس از ارتقا زیر ۷۰٪ باشد",
+        successCriteria: { kind: "cpu_below_pct", pct: 70, underLoad: true },
+        successCriteria_fa: "p95 مصرف CPU پس از ارتقا، هنگام اعمال بار، زیر ۷۰٪ باشد",
       },
       {
         tool: "coding_agent_handoff",
@@ -253,8 +254,8 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
         cost_fa: "بدون هزینه",
         impact_fa: "بدون تغییر در برنامه‌ی زنده",
         rollback_fa: "—",
-        successCriteria: { kind: "cpu_below_pct", pct: 70 },
-        successCriteria_fa: "پس از اصلاح، p95 CPU زیر ۷۰٪ بماند",
+        successCriteria: { kind: "cpu_below_pct", pct: 70, underLoad: true },
+        successCriteria_fa: "پس از اصلاح، p95 CPU هنگام بار زیر ۷۰٪ بماند",
       },
     ],
   },
@@ -281,8 +282,8 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
         cost_fa: "بدون هزینه؛ ری‌استارت کوتاه",
         impact_fa: "ری‌استارت برنامه با پورت جدید",
         rollback_fa: "بازگرداندن پورت قبلی با app_update_port",
-        successCriteria: { kind: "applets_running" },
-        successCriteria_fa: "وضعیت ریلیز READY شود و نمونه‌ی برنامه در حال اجرا باشد",
+        successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
+        successCriteria_fa: "مسیر عمومی (مسیر خراب یا /) پاسخ غیر ۵xx بدهد؛ پاسخ ۰ یا خطای ۵xx یعنی هنوز قطع است",
       },
     ],
   },
@@ -553,6 +554,140 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
         rollback_fa: "—",
         successCriteria: { kind: "probe_ok", path: FAILING_PATH },
         successCriteria_fa: "پس از اصلاح و دیپلوی، مسیر خراب پاسخ ۲xx بدهد",
+      },
+    ],
+  },
+  {
+    id: "app_unreachable_proxy",
+    title_fa: "پروکسی به برنامه نمی‌رسد (502)",
+    title_en: "Reverse proxy cannot reach the application (502)",
+    symptoms: ["502", "۵۰۲", "bad gateway", "پروکسی", "nginx", "دروازه", "بالا نمیاد", "بالا نمی‌آید", "باز نمی", "خطا", "error"],
+    prior: -0.5,
+    requiredSignals: ["PROXY_UPSTREAM_DOWN"],
+    weights: { PROXY_UPSTREAM_DOWN: 3, APP_EXCEPTION: 0.5, CRASH_LOOP: 0.5 },
+    against: { APP_STOPPED: 1 },
+    dependsOn: ["logs_get"],
+    explain_fa: "پروکسی (nginx) نتوانست به پروسه‌ی برنامه وصل شود یا اتصال در میانه‌ی پاسخ بسته شد؛ برنامه یا بالا نیست یا روی پورتی غیر از پورت پروکسی گوش می‌دهد.",
+    confirmingTest_fa: "بررسی پیام connect() failed یا upstream prematurely closed و زمان آخرین خروج برنامه در رویدادها",
+    suggested_change_fa:
+      "اگر پیام connection refused است، پورت گوش‌دادن برنامه را با پورت تنظیم‌شده یکی کنید. اگر اتصال در میانه‌ی پاسخ بسته شده، آخرین stack trace را بخوانید: برنامه احتمالاً کرش می‌کند. ری‌استارت فقط اثر موقت دارد.",
+    remediations: [
+      {
+        tool: "app_restart",
+        risk: "L2",
+        params_template: {},
+        title_fa: "ری‌استارت برنامه و اتصال دوباره‌ی پروکسی",
+        cost_fa: "بدون هزینه؛ حدود ۱۰ ثانیه قطعی",
+        impact_fa: "قطع کوتاه سرویس",
+        rollback_fa: "نیازی نیست",
+        successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
+        successCriteria_fa: "مسیر خراب پاسخ غیر ۵xx بدهد",
+      },
+      {
+        tool: "coding_agent_handoff",
+        risk: "L0",
+        params_template: {},
+        title_fa: "Fix Brief برای کرش یا پورت نادرست برنامه",
+        cost_fa: "بدون هزینه",
+        impact_fa: "بدون تغییر در برنامه‌ی زنده",
+        rollback_fa: "—",
+        successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
+        successCriteria_fa: "پس از اصلاح، مسیر خراب پاسخ غیر ۵xx بدهد",
+      },
+    ],
+  },
+  {
+    id: "port_conflict",
+    title_fa: "تداخل پورت (پورت در حال استفاده است)",
+    title_en: "Port already in use (EADDRINUSE)",
+    symptoms: ["پورت", "port", "EADDRINUSE", "address", "در حال استفاده", "بالا نمیاد", "بالا نمی‌آید", "کرش", "crash", "خطا", "error"],
+    prior: -0.5,
+    requiredSignals: ["PORT_CONFLICT"],
+    weights: { PORT_CONFLICT: 3, CRASH_LOOP: 0.5, APP_EXCEPTION: 0.2 },
+    against: {},
+    dependsOn: ["logs_get"],
+    explain_fa: "پروسه‌ی دیگری روی همان پورت گوش می‌دهد (EADDRINUSE). معمولاً دو نمونه‌ی برنامه، یا یک پروسه‌ی قدیمی که پایان نیافته، روی یک پورت ثابت بالا می‌آیند.",
+    confirmingTest_fa: "بررسی تعداد نمونه‌ها (scale) و پورت ثابت در کد که با متغیر PORT یکی نیست",
+    suggested_change_fa:
+      "پورت را فقط از متغیر PORT بخوانید و در کد عدد ثابت نگذارید. هر نمونه یک پروسه‌ی واحد اجرا کند. اگر پروسه‌ی قدیمی باقی می‌ماند، خاتمه‌ی تمیز (SIGTERM) و بستن سرور را پیاده کنید.",
+    remediations: [
+      {
+        tool: "app_restart",
+        risk: "L2",
+        params_template: {},
+        title_fa: "ری‌استارت برای آزادسازی پورت",
+        cost_fa: "بدون هزینه؛ حدود ۱۰ ثانیه قطعی",
+        impact_fa: "قطع کوتاه سرویس",
+        rollback_fa: "نیازی نیست",
+        successCriteria: { kind: "applets_running" },
+        successCriteria_fa: "نمونه‌ی برنامه بالا بیاید و خطای EADDRINUSE دوباره دیده نشود",
+      },
+      {
+        tool: "coding_agent_handoff",
+        risk: "L0",
+        params_template: {},
+        title_fa: "Fix Brief برای خواندن پورت از متغیر محیطی",
+        cost_fa: "بدون هزینه",
+        impact_fa: "بدون تغییر در برنامه‌ی زنده",
+        rollback_fa: "—",
+        successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
+        successCriteria_fa: "پس از اصلاح، مسیر خراب پاسخ غیر ۵xx بدهد",
+      },
+    ],
+  },
+  {
+    id: "tls_error",
+    title_fa: "خطای گواهی TLS",
+    title_en: "TLS certificate verification failed",
+    symptoms: ["ssl", "tls", "گواهی", "certificate", "https", "امنیت", "ارتباط امن", "خطا", "error"],
+    prior: -0.5,
+    requiredSignals: ["TLS_ERROR"],
+    weights: { TLS_ERROR: 3, APP_EXCEPTION: 0.3 },
+    against: {},
+    dependsOn: ["logs_get"],
+    explain_fa: "اعتبارسنجی گواهی TLS شکست خورده: زنجیره‌ی گواهی ناقص است، گواهی منقضی شده، یا گواهی خودامضا است.",
+    confirmingTest_fa: "تعیین میزبانی که گواهی‌اش رد شده (در پیام خطا) و بررسی تاریخ انقضای آن",
+    suggested_change_fa:
+      "اگر سرویس مقابل گواهی معتبر دارد، زنجیره‌ی CA را در محیط برنامه تنظیم کنید (مثلاً NODE_EXTRA_CA_CERTS یا CA bundle در پایتون). اگر گواهی منقضی شده، تمدید آن با صاحب سرویس است. هرگز اعتبارسنجی TLS را در کد خاموش نکنید.",
+    remediations: [
+      {
+        tool: "coding_agent_handoff",
+        risk: "L0",
+        params_template: {},
+        title_fa: "Fix Brief برای تنظیم اعتبارسنجی گواهی",
+        cost_fa: "بدون هزینه",
+        impact_fa: "بدون تغییر در برنامه‌ی زنده",
+        rollback_fa: "—",
+        successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
+        successCriteria_fa: "پس از اصلاح، مسیر خراب پاسخ غیر ۵xx بدهد",
+      },
+    ],
+  },
+  {
+    id: "build_error",
+    title_fa: "خطای ساخت برنامه (Build)",
+    title_en: "Application build failed",
+    symptoms: ["build", "بیلد", "ساخت", "deploy", "دیپلوی", "module", "ماژول", "compile", "کامپایل", "next", "نکست"],
+    prior: -0.5,
+    requiredSignals: ["BUILD_ERROR"],
+    weights: { BUILD_ERROR: 3 },
+    against: {},
+    dependsOn: ["logs_get"],
+    explain_fa: "ساخت یا اجرای برنامه شکست خورده است: ماژول یا فایلی پیدا نشده، یا کامپایل به خطا خورده است. این خطا از کد یا وابستگی‌ها می‌آید، نه از تنظیمات لیارا.",
+    confirmingTest_fa: "خواندن نام دقیق ماژول یا فایل گم‌شده در پیام خطا و بررسی وجود آن در package.json و lock file",
+    suggested_change_fa:
+      "نام ماژول یا مسیر import را در پیام خطا بخوانید. اگر پکیج نصب نشده، آن را به package.json اضافه کنید و lock file را commit کنید. اگر پکیج فقط در devDependencies است ولی برای ساخت یا اجرا لازم است، آن را به dependencies ببرید. همان دستور ساخت (مثلاً next build یا npm run build) را پیش از دیپلوی روی ماشین خود اجرا کنید.",
+    remediations: [
+      {
+        tool: "coding_agent_handoff",
+        risk: "L0",
+        params_template: {},
+        title_fa: "Fix Brief برای رفع خطای ساخت",
+        cost_fa: "بدون هزینه",
+        impact_fa: "بدون تغییر در برنامه‌ی زنده",
+        rollback_fa: "—",
+        successCriteria: { kind: "probe_not_5xx", path: FAILING_PATH },
+        successCriteria_fa: "پس از ساخت موفق و دیپلوی، مسیر خراب پاسخ غیر ۵xx بدهد",
       },
     ],
   },

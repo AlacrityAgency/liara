@@ -1,5 +1,5 @@
-import type { FixBrief, Incident, SuccessCriterion } from "@sokan/contracts";
-import type { CollectedEvidence } from "./types";
+import type { FixBrief, Incident } from "@sokan/contracts";
+import type { CollectedEvidence, DiagCriterion } from "./types";
 import { clusterErrors } from "./logparse";
 import { STANDARD_RUNBOOKS } from "./runbooks";
 import { failingPathsFromEvidence } from "./verifier";
@@ -12,8 +12,10 @@ const identity: Redactor = (t) => t;
 const NOISE_ERROR = /EADDRINUSE|EACCES: permission denied, listen/i;
 
 /** Human-readable check for one criterion, used as acceptance tests for the Coding Agent. */
-export function describeCriterion(c: SuccessCriterion): { test: string; metric?: string } {
+export function describeCriterion(c: DiagCriterion): { test: string; metric?: string } {
   switch (c.kind) {
+    case "probe_not_5xx":
+      return { test: `GET ${c.path} answers with a status below 500 (non-zero)`, metric: "probe.status" };
     case "probe_ok":
       return { test: `GET ${c.path} returns 2xx or 3xx`, metric: "probe.status" };
     case "probe_latency_below":
@@ -25,7 +27,10 @@ export function describeCriterion(c: SuccessCriterion): { test: string; metric?:
     case "mem_below_pct":
       return { test: `p95 memory stays below ${c.pct}% of the limit`, metric: "memP95Pct" };
     case "cpu_below_pct":
-      return { test: `p95 CPU stays below ${c.pct}%`, metric: "cpuP95Pct" };
+      return {
+        test: `p95 CPU stays below ${c.pct}%${c.underLoad ? " while load is applied" : ""}`,
+        metric: "cpuP95Pct",
+      };
     case "disk_used_below":
       return { test: `disk usage stays below ${c.pct}%`, metric: "diskUsedPct" };
     case "applets_running":

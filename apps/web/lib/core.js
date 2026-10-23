@@ -42,7 +42,10 @@ function createCore(options = {}) {
     : new AuditLedger();
   const approvals = new ApprovalService({ secret, audit });
   const redactor = new SecretRedactor({ env });
-  const liara = options.liara || new LiaraClient({ apiToken: env.LIARA_API_TOKEN, teamID: env.LIARA_TEAM_ID });
+  // The Liara client is swappable at runtime (Simple mode connect/disconnect): always read it as core.liara.
+  const liaraBaseUrl = env.SOKAN_LIARA_BASE_URL || undefined;
+  const liara = options.liara || new LiaraClient({ apiToken: env.LIARA_API_TOKEN, teamID: env.LIARA_TEAM_ID, baseUrl: liaraBaseUrl });
+  const envLiara = env.LIARA_API_TOKEN ? liara : null;
   const llm = options.llm || LlmClient.fromEnv(env);
   const orchestrator = new Orchestrator(llm);
   const chaosPort = Number(options.chaosPort || env.CHAOS_PORT || DEFAULT_CHAOS_PORT);
@@ -59,6 +62,14 @@ function createCore(options = {}) {
     stateDir,
     token: options.token,
     liara,
+    /** Client built from LIARA_API_TOKEN at startup; it wins over any saved token and cannot be forgotten. */
+    envLiara,
+    liaraBaseUrl,
+    /** Live app used by the operator console (SOKAN_APP) or the project selected in Simple mode. */
+    liveAppName: env.SOKAN_APP && env.SOKAN_APP.length > 0 ? env.SOKAN_APP : null,
+    /** Test/stub override for the public app URL, with {name} as the placeholder. Unset in production. */
+    appUrlTemplate: env.SOKAN_LIARA_APP_URL || null,
+    simple: null,
     llm,
     orchestrator,
     approvals,
@@ -96,9 +107,19 @@ function createCore(options = {}) {
   };
 
   // ---------- helpers ----------
-  core.isLive = () => liara.isLive;
-  core.mode = () => (liara.isLive ? "live" : "simulated");
-  core.appName = () => (liara.isLive ? (env.SOKAN_APP || null) : TARGET_NAME);
+  core.isLive = () => core.liara.isLive;
+  core.mode = () => (core.liara.isLive ? "live" : "simulated");
+  core.appName = () => (core.liara.isLive ? core.liveAppName : TARGET_NAME);
+  /** Swaps the Liara client (live or simulated). Cached account and plan data belong to the old client. */
+  core.setLiara = (client) => {
+    core.liara = client;
+    core.state.account = null;
+    core.state.liveApp = null;
+    core.state.plans = null;
+  };
+  core.liveUrl = (name) => (core.appUrlTemplate
+    ? core.appUrlTemplate.split("{name}").join(encodeURIComponent(name))
+    : `https://${name}.liara.run`);
   core.redact = (text) => redactor.redactText(String(text ?? ""));
   core.clean = (obj) => redactor.redactDeep(obj);
   core.registerSecret = (value) => redactor.addLiteral(String(value ?? ""));
@@ -167,7 +188,7 @@ function createCore(options = {}) {
   };
 
   core.targetBase = () => {
-    if (liara.isLive) return `https://${core.appName()}.liara.run`;
+    if (core.liara.isLive) return core.liveUrl(core.appName());
     return `http://127.0.0.1:${core.app.port}`;
   };
 
@@ -178,7 +199,7 @@ function createCore(options = {}) {
     const timer = setTimeout(() => controller.abort(), 4000);
     let status = null;
     let text = "";
-    if (liara.isLive && !core.appName()) {
+    if (core.liara.isLive && !core.appName()) {
       clearTimeout(timer);
     } else try {
       const res = await fetch(`${core.targetBase()}${urlPath}`, { signal: controller.signal, redirect: "manual" });
@@ -214,17 +235,17 @@ function createCore(options = {}) {
 
   core.refreshAccount = async () => {
     lastAccountAt = Date.now();
-    if (!liara.isLive) {
+    if (!core.liara.isLive) {
       core.state.account = null;
       return;
     }
-    const r = await liara.getBalance();
+    const r = await core.liara.getBalance();
     if (r.ok) core.state.account = { balance: r.data.balance };
   };
 
   core.refreshLiveApp = async () => {
-    if (!liara.isLive || !core.appName()) return;
-    const r = await liara.getApp(core.appName());
+    if (!core.liara.isLive || !core.appName()) return;
+    const r = await core.liara.getApp(core.appName());
     if (r.ok) core.state.liveApp = r.data.project;
   };
 
@@ -234,13 +255,13 @@ function createCore(options = {}) {
     try {
       const paths = unique(["/health", ...core.state.watchPaths]);
       for (const p of paths) await core.probeNow(p);
-      if (!liara.isLive) {
+      if (!core.liara.isLive) {
         const sample = core.runtime.cpuSample();
         if (sample) {
           core.cpuSamples.push(sample);
           if (core.cpuSamples.length > 100) core.cpuSamples.shift();
         }
-      } else if (Date.now() - lastAccountAt > 30000) {
+      } else if (Date.now() - lastAccountAt > 30000 && core.appName()) {
         await core.refreshAccount().catch(() => undefined);
         await core.refreshLiveApp().catch(() => undefined);
       }
@@ -284,7 +305,7 @@ function createCore(options = {}) {
 
   // ---------- views ----------
   core.appView = () => {
-    if (liara.isLive) {
+    if (core.liara.isLive) {
       const live = core.state.liveApp;
       return {
         name: core.appName(),
