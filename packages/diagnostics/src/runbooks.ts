@@ -80,7 +80,8 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
     prior: -0.5,
     requiredSignals: ["DEPLOY_REGRESSION"],
     weights: { DEPLOY_REGRESSION: 2.5, APP_EXCEPTION: 1 },
-    against: { OOM_KILLED: 1 },
+    // A specific cause (missing env, port) explains the regression better, so it competes here.
+    against: { OOM_KILLED: 1, MISSING_ENV: 2.5, PORT_MISMATCH: 2 },
     dependsOn: ["release_list", "logs_get"],
     explain_fa: "خطاها بلافاصله پس از انتشار یک نسخه‌ی موفق شروع شده‌اند؛ تغییرات آن نسخه احتمالاً علت است.",
     confirmingTest_fa: "مقایسه‌ی زمان پایان ریلیز با زمان شروع خطا و بررسی تغییرات همان ریلیز",

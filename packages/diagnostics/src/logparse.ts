@@ -41,13 +41,17 @@ const GO_PANIC = /^panic:\s*(.*)$/;
 const GO_FRAME = /^\s+(\/?[^\s:]+\.go):(\d+)/;
 
 function isUserFrame(file: string): boolean {
-  return !/node_modules|node:internal|^internal\/|site-packages|\/usr\/lib|\/vendor\/|runtime\/|<anonymous>/.test(file);
+  return !/node_modules|^node:|node:internal|^internal\/|site-packages|\/usr\/lib|\/vendor\/|runtime\/|<anonymous>/.test(file);
 }
 
+/** Project-relative path from an absolute frame path. `src/` wins over `app/`, so "/app/src/x.js" gives "src/x.js". */
 function shortFile(file: string): string {
   const norm = file.replace(/\\/g, "/");
-  const m = norm.match(/(?:^|\/)((?:src|app|lib|routes|pkg|cmd)\/.*)$/);
-  return m ? m[1] : norm.split("/").slice(-2).join("/");
+  for (const dir of ["src", "lib", "pkg", "cmd", "routes", "app"]) {
+    const m = norm.match(new RegExp(`(?:^|/)(${dir}/.*)$`));
+    if (m) return m[1];
+  }
+  return norm.split("/").slice(-2).join("/");
 }
 
 interface Parsed {

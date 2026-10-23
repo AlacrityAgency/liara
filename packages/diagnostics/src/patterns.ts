@@ -26,8 +26,10 @@ const REDIS = /redis|ioredis|(?<!\d)6379(?!\d)/i;
 
 const OOM = /out of memory|oomkilled|javascript heap out of memory/i;
 
+// "TypeError", "PrismaClientInitializationError" and "local.ERROR" end in Error/Exception/ERROR, so the
+// suffix is matched without a leading word boundary.
 const ERROR_LINE =
-  /\b(?:error|exception|fatal|panic|traceback|critical|SQLSTATE|ECONNREFUSED|ETIMEDOUT|ENOSPC|ENOTFOUND)\b|\bpanic:|Uncaught/i;
+  /(?:error|exception)\b|\b(?:fatal|panic|traceback|critical|SQLSTATE|ECONNREFUSED|ETIMEDOUT|ENOSPC|ENOTFOUND)\b|\bpanic:|Uncaught/i;
 
 export function isPoolExhaustionLine(text: string): boolean {
   return POOL_PATTERN.test(text);

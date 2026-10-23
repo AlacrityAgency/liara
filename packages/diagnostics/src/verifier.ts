@@ -266,7 +266,7 @@ export function failingPathsFromEvidence(evidence: CollectedEvidence): string[] 
   }
 
   const accessLog = /\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\/[^\s"?]*)[^"\n]*"?\s+(5\d\d)\b/;
-  const ginLog = /\|\s*(5\d\d)\s*\|[^|]*\|\s*(?:GET|POST|PUT|PATCH|DELETE)\s+"(\/[^"?]*)/;
+  const ginLog = /\|\s*(5\d\d)\s*\|(?:[^|]*\|)+\s*(?:GET|POST|PUT|PATCH|DELETE)\s+"(\/[^"?]*)/;
   for (const l of evidence.logs ?? []) {
     const m = l.text.match(accessLog);
     if (m) push(m[1]);
