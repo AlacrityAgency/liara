@@ -5,7 +5,7 @@
 const fs = require("fs");
 const path = require("path");
 const {
-  DiagnosticEngine, failingPathsFromEvidence, fixBriefToMarkdown,
+  DiagnosticEngine, failingPathsFromEvidence, fixBriefToMarkdown, isMitigationOnlyRemediation,
 } = require("../../../build/diagnostics/src/index.js");
 const { collectEvidence } = require("./evidence");
 const { PLAN_LADDER, SIM_DEFAULT_ENVS, unique } = require("./core");
@@ -37,6 +37,10 @@ async function buildProposal(core, incident, top, rem) {
     incidentId: incident.id,
     remediationId: rem.id,
     criteria: rem.successCriteria ? [rem.successCriteria] : [],
+    // The executor samples CPU while driving load when underLoad is set (EVALUATION R5), and reads
+    // mitigationOnly to end such a remediation as "mitigated" instead of "resolved".
+    underLoad: !!(rem.successCriteria && rem.successCriteria.underLoad),
+    mitigationOnly: isMitigationOnlyRemediation(top.runbookId, rem.action),
     probePaths: failingPathsFromEvidence(core.lastEvidence || { probes: [], logs: [] }),
   };
 
@@ -192,6 +196,11 @@ async function investigate(core, turn, { symptom, proposeCards = true }) {
   }
 
   const stored = core.state.incident;
+  // Never leave "awaiting_approval" with no card to approve (EVALUATION R4).
+  if (created.length === 0 && stored && stored.status === "awaiting_approval") {
+    stored.status = "diagnosed";
+    core.emit("incident", stored);
+  }
   turn.incident = stored;
   turn.fixBrief = core.state.fixBrief;
   turn.needs = needs;

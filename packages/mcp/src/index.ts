@@ -15,8 +15,8 @@ export const MCP_EXTRA_TOOLS: ToolSpec[] = [
     description_fa: "Fix Brief یک حادثه برای Coding Agent: شواهد redacted، مکان‌های مشکوک و معیار پذیرش",
     parameters: {
       type: "object",
-      properties: { incident_id: { type: "string", description: "شناسه‌ی حادثه" } },
-      required: ["incident_id"],
+      properties: { incident_id: { type: "string", description: "شناسه‌ی حادثه؛ خالی یعنی حادثه‌ی جاری" } },
+      required: [],
     },
   },
   {
