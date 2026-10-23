@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>سُکان — انتشار سایت</title>
+  <meta name="description" content="سایتت را با یک کلید به لیارا وصل کن و چند دقیقه بعد آنلاین ببینش">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/simple.css">
+</head>
+<body>
+  <div class="page">
+    <!-- Shown only in the simulated demo mode -->
+    <div id="simBanner" class="sim-banner" role="status" hidden>
+      <span>حالت آزمایشی — روی لیارا چیزی ساخته نمی‌شود</span>
+      <button type="button" class="link-btn" id="simConnectBtn">اتصال حساب واقعی</button>
+    </div>
+
+    <header class="top">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">س</span>
+        <span class="brand-name">سُکان</span>
+      </div>
+    </header>
+
+    <nav id="stepper" class="stepper" aria-label="مراحل" hidden></nav>
+
+    <main id="stage" class="stage" aria-live="polite">
+      <section class="card">
+        <p class="lead">در حال آماده‌سازی…</p>
+      </section>
+    </main>
+
+    <footer id="footer" class="foot" hidden>
+      <a href="/advanced" class="foot-link">حالت پیشرفته</a>
+      <button type="button" class="link-btn" id="disconnectBtn">خروج از حساب</button>
+    </footer>
+  </div>
+
+  <dialog id="confirmDlg" class="dlg" aria-labelledby="dlgTitle"></dialog>
+
+  <script src="/simple.js"></script>
+</body>
+</html>
