@@ -1,91 +1,111 @@
-import type { Incident, Hypothesis, FixBrief, Snapshot } from "@sokan/contracts";
+import type { Incident, Hypothesis, FixBrief, Snapshot, Signal, SignalKind, Remediation } from "@sokan/contracts";
 import type { CollectedEvidence } from "./types";
-import { extractSignals } from "./extractors";
+import { extractSignals, errorOnset } from "./extractors";
 import { flagInstructions } from "./flags";
 import { STANDARD_RUNBOOKS } from "./runbooks";
-import { clusterErrors } from "./logparse";
+import { scoreRunbook, type ScoredRunbook } from "./scoring";
+import { createFixBrief as buildFixBrief, type Redactor } from "./brief";
+import { failingPathsFromEvidence, takeSnapshot as takeVerifySnapshot } from "./verifier";
 import { percentile } from "./stats";
+
+const DEFAULT_SYMPTOM = "خطا یا کندی در سرویس";
+const MAX_HYPOTHESES = 3;
+
+/** Replace "{{key}}" placeholders in a runbook template with values from the evidence. */
+function resolveTemplate<T>(value: T, ctx: Record<string, string>): T {
+  if (typeof value === "string") {
+    const exact = value.match(/^\{\{(\w+)\}\}$/);
+    if (exact && ctx[exact[1]] !== undefined) {
+      const v = ctx[exact[1]];
+      return (/^\d+$/.test(v) ? Number(v) : v) as unknown as T;
+    }
+    return value.replace(/\{\{(\w+)\}\}/g, (m, k) => ctx[k] ?? m) as unknown as T;
+  }
+  if (Array.isArray(value)) return value.map((v) => resolveTemplate(v, ctx)) as unknown as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = resolveTemplate(v, ctx);
+    return out as T;
+  }
+  return value;
+}
+
+function placeholderContext(data: CollectedEvidence, byKind: ReadonlyMap<SignalKind, Signal>): Record<string, string> {
+  const ctx: Record<string, string> = {
+    failingPath: failingPathsFromEvidence(data)[0] ?? "/",
+    poolSignature: "connection",
+  };
+  const mismatch = byKind.get("PORT_MISMATCH")?.data?.listenedPort;
+  if (mismatch !== undefined && mismatch !== null) ctx.listenedPort = String(mismatch);
+  const pool = byKind.get("DB_POOL_EXHAUSTED")?.data?.pattern;
+  if (typeof pool === "string") ctx.poolSignature = pool;
+  return ctx;
+}
+
+const unique = (xs: string[]): string[] => Array.from(new Set(xs));
+
+function toHypothesis(s: ScoredRunbook, ctx: Record<string, string>): Hypothesis {
+  const rb = s.runbook;
+  const remediations: Remediation[] = rb.remediations.map((r, i) => ({
+    id: `rem_${rb.id}_${i}`,
+    action: r.tool,
+    params: resolveTemplate(r.params_template, ctx),
+    riskLevel: r.risk,
+    label_fa: r.title_fa,
+    successCriteria_fa: r.successCriteria_fa,
+    cost_fa: r.cost_fa,
+    impact_fa: r.impact_fa,
+    rollback_fa: r.rollback_fa,
+    successCriteria: resolveTemplate(r.successCriteria, ctx),
+  }));
+  return {
+    id: `hyp_${rb.id}`,
+    runbookId: rb.id,
+    title_fa: rb.title_fa,
+    explain_fa: rb.explain_fa,
+    confidence: s.confidence,
+    score: Math.round(s.score * 1000) / 1000,
+    logit: Math.round(s.logit * 1000) / 1000,
+    evidence_for: unique(s.supporting.flatMap((x) => x.evidence)),
+    evidence_against: unique(s.contradicting.flatMap((x) => x.evidence)),
+    confirming_test: rb.confirmingTest_fa,
+    remediations,
+    ...(s.cappedBy.length > 0 ? { missingEvidence: s.cappedBy } : {}),
+  };
+}
 
 export class DiagnosticEngine {
   /**
-   * Run the complete SRE diagnostic pipeline:
-   * Evidence -> Signal Extraction -> Instruction Flagging -> Hypothesis Scoring -> Incident Formulation
+   * Run the SRE diagnostic pipeline (WHITEPAPER §8.2):
+   * Evidence -> Signals (with strength) -> Instruction flags -> Weighted runbook scoring -> Incident.
    */
-  public static diagnose(
-    evidenceData: CollectedEvidence,
-    symptom = "خطا یا کندی در سرویس"
-  ): Incident {
+  public static diagnose(evidenceData: CollectedEvidence, symptom = DEFAULT_SYMPTOM): Incident {
     const { signals, evidence, missingEvidence } = extractSignals(evidenceData);
     const flags = flagInstructions(evidenceData.logs ?? []);
 
-    const signalKinds = new Set(signals.map((s) => s.kind));
-    const hypotheses: Hypothesis[] = [];
-    const rejected: Array<{ title_fa: string; reason_fa: string }> = [];
+    const byKind = new Map<SignalKind, Signal>();
+    for (const s of signals) if (!byKind.has(s.kind)) byKind.set(s.kind, s);
 
-    for (const rb of STANDARD_RUNBOOKS) {
-      // 1. Check contradicting signals
-      const hasContradiction = rb.contradictingSignals?.some((c) => signalKinds.has(c));
-      if (hasContradiction) {
-        rejected.push({
-          title_fa: rb.title_fa,
-          reason_fa: "وجود سیگنال‌های متعارض که این علت را نامحتمل می‌کند.",
-        });
-        continue;
-      }
+    const onsetIso = evidenceData.symptomStart ?? errorOnset(evidenceData);
+    const scored = STANDARD_RUNBOOKS.map((rb) =>
+      scoreRunbook(rb, byKind, { userText: symptom, onsetIso, missingEvidence })
+    );
+    const applicable = scored.filter((s) => s.applicable);
 
-      // 2. Check required signals
-      const missingRequired = rb.requiredSignals.filter((rs) => !signalKinds.has(rs));
-      if (missingRequired.length > 0) {
-        rejected.push({
-          title_fa: rb.title_fa,
-          reason_fa: `سیگنال‌های الزامی (${missingRequired.join(", ")}) در شواهد یافت نشد.`,
-        });
-        continue;
-      }
+    const rejected = applicable
+      .filter((s) => s.rejected)
+      .map((s) => ({
+        title_fa: s.runbook.title_fa,
+        reason_fa: `سیگنال‌های متعارض (${s.contradicting.map((c) => c.kind).join(", ")}) این علت را نامحتمل می‌کنند.`,
+      }));
 
-      // 3. Compute score and evidence citations
-      const evidenceForIds: string[] = [];
-      const evidenceAgainstIds: string[] = [];
+    const ctx = placeholderContext(evidenceData, byKind);
+    const hypotheses = applicable
+      .filter((s) => !s.rejected)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_HYPOTHESES)
+      .map((s) => toHypothesis(s, ctx));
 
-      for (const sig of signals) {
-        if (rb.requiredSignals.includes(sig.kind) || rb.supportingSignals.includes(sig.kind)) {
-          evidenceForIds.push(...sig.evidence);
-        }
-      }
-
-      // Base confidence
-      const supportingCount = rb.supportingSignals.filter((ss) => signalKinds.has(ss)).length;
-      let confidence: Hypothesis["confidence"] = "medium";
-      let score = 0.6;
-
-      if (supportingCount >= 1 || rb.requiredSignals.length >= 2) {
-        confidence = "high";
-        score = 0.95;
-      } else if (supportingCount === 0 && evidenceForIds.length > 0) {
-        confidence = "medium";
-        score = 0.7;
-      } else {
-        confidence = "low";
-        score = 0.4;
-      }
-
-      hypotheses.push({
-        id: `hyp_${rb.id}`,
-        title_fa: rb.title_fa,
-        explain_fa: rb.explain_fa,
-        confidence,
-        score,
-        evidence_for: Array.from(new Set(evidenceForIds)),
-        evidence_against: evidenceAgainstIds,
-        confirming_test: rb.confirmingTest_fa,
-        remediations: rb.remediations,
-      });
-    }
-
-    // Sort hypotheses by score descending
-    hypotheses.sort((a, b) => b.score - a.score);
-
-    // If no hypothesis matched but we have errors, create a generic one
     if (hypotheses.length === 0 && signals.length > 0) {
       hypotheses.push({
         id: "hyp_generic",
@@ -119,96 +139,27 @@ export class DiagnosticEngine {
   }
 
   /**
-   * Take a current snapshot of system metrics for before/after comparison (§10.6).
+   * Legacy snapshot in the contract shape (Incident.verification). The verifier uses
+   * `takeSnapshot` from this package, which returns the richer VerifySnapshot.
    */
   public static takeSnapshot(data: CollectedEvidence): Snapshot {
-    const errorCount = (data.logs ?? []).filter((l) =>
-      /error|exception|fail|500|fatal/i.test(l.text)
-    ).length;
-
-    const probeOk = (data.probes ?? []).filter((p) => p.status && p.status >= 200 && p.status < 400).length;
-    const probeTotal = data.probes?.length ?? 0;
-
+    const v = takeVerifySnapshot(data);
+    const probeOk = v.probe.filter((p) => p.status !== null && p.status >= 200 && p.status < 400).length;
     const probeLats = (data.probes ?? []).map((p) => p.ms).filter((ms): ms is number => typeof ms === "number");
-    const p95Ms = percentile(probeLats, 95);
-
-    let memoryPeakPct: number | null = null;
-    if (data.memory && data.memory.length > 0 && data.app?.memoryLimitMB) {
-      const maxMb = Math.max(...data.memory.map((m) => m.mb));
-      memoryPeakPct = Math.round((maxMb / data.app.memoryLimitMB) * 100);
-    }
-
-    let cpuPct: number | null = null;
-    if (data.cpu && data.cpu.length > 0) {
-      const avg = data.cpu.reduce((a, b) => a + b.pct, 0) / data.cpu.length;
-      cpuPct = Math.round(avg);
-    }
-
     return {
       ts: new Date().toISOString(),
       appletState: data.applets?.[0]?.state ?? "unknown",
-      errorsPerMinute: errorCount,
+      errorsPerMinute: Math.round(v.errorRatePerMin),
       probeOk,
-      probeTotal,
-      p95Ms,
-      memoryPeakPct,
-      cpuPct,
+      probeTotal: v.probe.length,
+      p95Ms: percentile(probeLats, 95),
+      memoryPeakPct: v.memP95Pct,
+      cpuPct: v.cpuP95Pct,
     };
   }
 
-  /**
-   * Generate a structured FixBrief for handoff to a Coding Agent (§11).
-   */
-  public static createFixBrief(
-    incident: Incident,
-    evidenceData: CollectedEvidence
-  ): FixBrief {
-    const topHyp = incident.hypotheses[0];
-    const clusters = evidenceData.logs ? clusterErrors(evidenceData.logs) : [];
-    const topCluster = clusters[0];
-
-    const suspected_locations: Array<{ file: string; line?: number }> = [];
-    if (topCluster?.frame?.file) {
-      suspected_locations.push({
-        file: topCluster.frame.file,
-        line: topCluster.frame.line,
-      });
-    }
-
-    const evidenceItems: FixBrief["evidence"] = [];
-    for (const c of clusters.slice(0, 3)) {
-      evidenceItems.push({
-        type: "log",
-        ts: c.firstTs,
-        text: `${c.errorType}: ${c.message} (${c.count} occurrences)`,
-      });
-    }
-
-    if (evidenceData.memory && evidenceData.memory.length > 0) {
-      const last = evidenceData.memory[evidenceData.memory.length - 1];
-      evidenceItems.push({
-        type: "metric",
-        name: "memory.usage",
-        value: `${last.mb}MB`,
-      });
-    }
-
-    let suggested_change = "بررسی کد، مدیریت خطاهای پیش‌بینی نشده یا بهینه‌سازی کوئری‌ها";
-    if (topHyp?.id.includes("missing_env")) {
-      suggested_change = "تعریف متغیرهای محیطی گمشده در تنظیمات پروژه یا افزودن fallback در کد";
-    } else if (topHyp?.id.includes("oom")) {
-      suggested_change = "بررسی آرایه‌های کش بدون محدودیت، شنونده‌های رویداد رهاشده (listener leaks) یا مدیریت بافرها";
-    }
-
-    return {
-      incident_id: incident.id,
-      symptom: incident.symptom,
-      hypothesis: topHyp?.title_fa ?? "خطای ناشناخته در کد",
-      confidence: topHyp?.confidence ?? "low",
-      evidence: evidenceItems,
-      suspected_locations,
-      suggested_change,
-      verification: "پاسخ موفق ۲۰۰ در تست پروب و عدم وجود استثنا در ۶۰ ثانیه اول پس از دیپلوی",
-    };
+  /** Fix Brief for a Coding Agent (WHITEPAPER §9.2). `redact` is applied to every log excerpt. */
+  public static createFixBrief(incident: Incident, evidenceData: CollectedEvidence, redact?: Redactor): FixBrief {
+    return buildFixBrief(incident, evidenceData, redact);
   }
 }

@@ -26,7 +26,9 @@ export type SignalKind =
   | "DISK_FULL"
   | "APP_EXCEPTION"
   | "TRAFFIC_SPIKE"
-  | "APP_STOPPED";
+  | "APP_STOPPED"
+  | "DB_POOL_EXHAUSTED"
+  | "CACHE_UNREACHABLE";
 
 export interface Signal {
   kind: SignalKind;
