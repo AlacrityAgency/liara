@@ -1,0 +1,7 @@
+{
+    "name":  "@sokan/llm",
+    "version":  "0.1.0",
+    "description":  "OpenAI-compatible LLM client, Persian Orchestrator with tool-calling, and offline intent router for Sokan",
+    "main":  "../../build/llm/src/index.js",
+    "private":  true
+}

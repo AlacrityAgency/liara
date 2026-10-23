@@ -1,0 +1,13 @@
+{
+    "name":  "@sokan/mcp",
+    "version":  "0.1.0",
+    "description":  "Stdio MCP server exposing the Sokan tool registry to Coding Agents (no approval power)",
+    "main":  "../../build/mcp/src/index.js",
+    "bin":  {
+                "sokan-mcp":  "../../build/mcp/src/bin.js"
+            },
+    "dependencies":  {
+                         "@sokan/llm":  "*"
+                     },
+    "private":  true
+}
