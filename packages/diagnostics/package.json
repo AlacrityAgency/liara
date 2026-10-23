@@ -1,0 +1,7 @@
+{
+  "name": "@sokan/diagnostics",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic SRE diagnostics: log parser, signal extractors, runbooks, scoring, verification (WHITEPAPER §10)",
+  "main": "../../build/diagnostics/src/index.js"
+}
