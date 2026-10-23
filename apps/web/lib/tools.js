@@ -223,7 +223,13 @@ async function requestMutation(core, turn, name, args) {
   const r = core.requestApproval(prepared.tool, prepared.params, prepared.card, { source: "chat" }, { confirmationText: prepared.confirmationText });
   if (!r.approval) return err("NOT_AN_APPROVAL_REQUEST");
   addApproval(turn, r.approval.id);
-  return { status: "approval_required", approvalId: r.approval.id, console_url: core.consoleUrl(r.approval.id), risk: r.approval.riskLevel };
+  return {
+    status: "approval_required",
+    approvalId: r.approval.id,
+    console_url: core.consoleUrl(r.approval.id),
+    risk: r.approval.riskLevel,
+    mode: core.mode(),
+  };
 }
 
 async function runL0(core, turn, name, args) {
@@ -312,8 +318,12 @@ function makeToolRunner(core, turn = newTurn()) {
     const invalid = validateToolArgs(spec, args ?? {});
     if (invalid !== null) return err("INVALID_ARGUMENTS", { missing_or_invalid: invalid });
     const risk = effectiveRisk(spec, args ?? {});
-    if (risk === "L0" || risk === "L1") return runL0(core, turn, name, args ?? {});
-    return requestMutation(core, turn, name, args ?? {});
+    const out = risk === "L0" || risk === "L1"
+      ? await runL0(core, turn, name, args ?? {})
+      : await requestMutation(core, turn, name, args ?? {});
+    // Errors that say what the user should do next are shown in the chat reply.
+    if (out && out.status === "error" && out.next_fa) turn.notice = out.next_fa;
+    return out;
   };
 }
 

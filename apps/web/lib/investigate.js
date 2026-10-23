@@ -7,7 +7,7 @@ const path = require("path");
 const {
   DiagnosticEngine, failingPathsFromEvidence, fixBriefToMarkdown,
 } = require("../../../build/diagnostics/src/index.js");
-const { collectEvidence, livePlans } = require("./evidence");
+const { collectEvidence } = require("./evidence");
 const { PLAN_LADDER, SIM_DEFAULT_ENVS, unique } = require("./core");
 
 const WINDOW_MS = 30 * 60000;
@@ -137,6 +137,13 @@ async function buildProposal(core, incident, top, rem) {
  * proposeCards is false (used by the injection demo, which must create no approvals).
  */
 async function investigate(core, turn, { symptom, proposeCards = true }) {
+  if (!core.appName()) {
+    return {
+      status: "error",
+      error: "APP_NAME_REQUIRED",
+      next_fa: "برای تحلیل اپ زنده، نام اپ را در متغیر SOKAN_APP تنظیم کنید.",
+    };
+  }
   const windowStart = new Date(Date.now() - WINDOW_MS).toISOString();
   const first = await collectEvidence(core, { windowStart, probePaths: unique(["/health", ...core.state.watchPaths]) });
   let failing = failingPathsFromEvidence(first);
@@ -151,6 +158,7 @@ async function investigate(core, turn, { symptom, proposeCards = true }) {
   incident.id = core.randomId("inc");
   incident.trigger = "user";
   core.state.incident = core.clean(incident);
+  core.emit("incident", core.state.incident);
   core.state.watchPaths = failing.filter((p) => p !== "/health").slice(0, 3);
 
   const brief = DiagnosticEngine.createFixBrief(incident, evidence, (t) => core.redact(t));
@@ -182,7 +190,6 @@ async function investigate(core, turn, { symptom, proposeCards = true }) {
       }
     }
   }
-  if (!core.appName()) needs.push({ tool: "app", keys: ["SOKAN_APP"] });
 
   const stored = core.state.incident;
   turn.incident = stored;
@@ -216,4 +223,4 @@ async function investigate(core, turn, { symptom, proposeCards = true }) {
   return { status: "ok", data: core.clean(data) };
 }
 
-module.exports = { investigate, addApproval, livePlans };
+module.exports = { investigate, addApproval };

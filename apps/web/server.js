@@ -14,7 +14,7 @@ const {
   SESSION_COOKIE, sendJson, sendText, authenticate, checkPost, readBody, parseJsonObject,
 } = require("./lib/http");
 const { TOOL_SPECS, validateToolArgs } = require("../../build/llm/src/index.js");
-const { DiagnosticEngine, fixBriefToMarkdown } = require("../../build/diagnostics/src/index.js");
+const { fixBriefToMarkdown } = require("../../build/diagnostics/src/index.js");
 const { handleChat } = require("./lib/chat");
 const { makeToolRunner, newTurn, selectPlan } = require("./lib/tools");
 const { scheduleApproved } = require("./lib/executor");
@@ -198,6 +198,7 @@ async function apiRoute(req, res, url, via) {
     return sendJson(res, out.status === "error" ? 400 : 200, out);
   }
   if (parts[1] === "approvals") {
+    if (!["approve", "reject", "cancel"].includes(parts[3])) return sendJson(res, 404, { error: "NOT_FOUND" });
     return postApproval(parts[2], parts[3], body, res);
   }
   if (parts[1] === "demo") {

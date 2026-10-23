@@ -178,7 +178,9 @@ function createCore(options = {}) {
     const timer = setTimeout(() => controller.abort(), 4000);
     let status = null;
     let text = "";
-    try {
+    if (liara.isLive && !core.appName()) {
+      clearTimeout(timer);
+    } else try {
       const res = await fetch(`${core.targetBase()}${urlPath}`, { signal: controller.signal, redirect: "manual" });
       status = res.status;
       text = urlPath === "/health" ? await res.text() : (await res.arrayBuffer().then(() => "", () => ""));

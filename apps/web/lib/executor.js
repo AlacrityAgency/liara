@@ -287,7 +287,7 @@ async function executeApproved(core, approvalId) {
     core.pendingMeta.delete(approvalId);
     core.emit("action_result", {
       approvalId, tool, ok: false, mode: core.mode(),
-      result_fa: "اجرا به‌دلیل عدم تطابق تأیید متوقف شد.",
+      result_fa: `${core.mode() === "simulated" ? "(شبیه‌سازی محلی) " : ""}اجرا به‌دلیل عدم تطابق تأیید متوقف شد.`,
       error: { what_fa: "اجرا متوقف شد", why_fa: `کد رد: ${auth.code}`, next_fa: "درخواست تأیید جدید بسازید." },
     });
     return;
@@ -295,7 +295,9 @@ async function executeApproved(core, approvalId) {
   const mode = core.mode();
   const started = Date.now();
   const incident = core.state.incident && meta.incidentId === core.state.incident.id ? core.state.incident : null;
-  const criteria = meta.criteria || DEFAULT_CRITERIA[tool] || [];
+  // Scaling to zero is a deliberate stop, so there is nothing to verify as "running".
+  const criteria = meta.criteria
+    || (tool === "app_scale" && params.scale === 0 ? [] : DEFAULT_CRITERIA[tool] || []);
   const probePaths = unique([
     ...(meta.probePaths || []),
     ...criteria.filter((c) => c.path).map((c) => c.path),
@@ -344,17 +346,19 @@ async function executeApproved(core, approvalId) {
     step(core, "verify", "failed");
   }
 
-  const passed = exec.ok && (verification ? verification.passed : false);
+  // resolved: the incident is fixed (needs a passing verification). auditOk: the action ran and was not refuted.
+  const resolved = exec.ok && verification !== null && verification.passed;
+  const auditOk = exec.ok && (verification === null || verification.passed);
   const durationMs = Date.now() - started;
-  core.state.verification = verification ? { ...verification, passed } : null;
+  core.state.verification = verification;
   if (incident) {
-    incident.status = passed ? "resolved" : "unresolved";
+    incident.status = resolved ? "resolved" : "unresolved";
     if (before && after) {
       incident.verification = {
         before: legacySnapshot(before.snapshot),
         after: legacySnapshot(after.snapshot),
-        passed,
-        verdict: passed ? "resolved" : "partial",
+        passed: resolved,
+        verdict: resolved ? "resolved" : "partial",
       };
     }
     incident.actions.push({
@@ -367,7 +371,7 @@ async function executeApproved(core, approvalId) {
     });
   }
   const resultText = exec.ok ? exec.detail_fa : exec.error.what_fa;
-  core.approvals.recordResult(tool, params, "user", passed, core.redact(resultText), approvalId, { mode, durationMs });
+  core.approvals.recordResult(tool, params, "user", auditOk, core.redact(resultText), approvalId, { mode, durationMs });
   core.pendingMeta.delete(approvalId);
   core.emit("approval", core.approvals.get(approvalId));
   if (incident) core.emit("incident", incident);
@@ -378,11 +382,11 @@ async function executeApproved(core, approvalId) {
     ok: exec.ok,
     mode,
     result_fa: mode === "simulated" && !resultText.startsWith("(شبیه‌سازی") ? SIM(resultText) : resultText,
-    ...(verification ? { verification: { ...verification, passed } } : {}),
+    ...(verification ? { verification } : {}),
     ...(exec.ok ? {} : { error: exec.error }),
   });
   core.emit("state", {});
-  return { ok: exec.ok, passed };
+  return { ok: exec.ok, resolved };
 }
 
 /** Schedules a delayed run for an approved approval (L3 waits out the cancel window). */

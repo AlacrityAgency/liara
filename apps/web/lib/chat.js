@@ -9,6 +9,7 @@ const MAX_MESSAGE = 2000;
 
 function composeOffline(core, turn) {
   const lines = [];
+  if (turn.notice) lines.push(turn.notice);
   if (turn.incident) {
     const top = turn.incident.hypotheses[0];
     if (top) {
