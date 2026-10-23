@@ -279,6 +279,57 @@ describe("Simple mode helpers", () => {
     assert.strictEqual(normalizeDomain(""), null);
   });
 
+  it("writes diagnose sentences from the signal data (variable, ports, MB, CPU, host)", () => {
+    const { _internal } = require("../apps/web/lib/simple.js");
+    const env = _internal.signalSentence({ kind: "MISSING_ENV", data: { variable: "DATABASE_URL" } }, {});
+    assert.ok(env.includes("DATABASE_URL") && env.includes("تعریف نشده"), env);
+    const port = _internal.signalSentence({ kind: "PORT_MISMATCH", data: { listenPort: 8080, expectedPort: 3000 } }, {});
+    assert.ok(port.includes("۸۰۸۰") && port.includes("۳۰۰۰"), port);
+    const mem = _internal.signalSentence({ kind: "MEMORY_PRESSURE", data: { pct: 96, rssMB: 110, limitMB: 120 } }, {});
+    assert.ok(mem.includes("۱۲۰") && mem.includes("۱۱۰"), mem);
+    const cpu = _internal.signalSentence({ kind: "CPU_SATURATION", data: { p95Pct: 95 } }, {});
+    assert.ok(cpu.includes("۹۵٪"), cpu);
+    const up = _internal.signalSentence({ kind: "UPSTREAM_SLOW", data: { host: "api.payments.example.ir" } }, {});
+    assert.ok(up.includes("api.payments.example.ir"), up);
+  });
+
+  it("judges the site from fresh probes: 5xx and unreachable are down, slow is degraded", () => {
+    const { _internal } = require("../apps/web/lib/simple.js");
+    const base = "http://127.0.0.1:3100";
+    const ok = (path, ms = 10) => ({ url: `${base}${path}`, code: 200, ms });
+    assert.strictEqual(_internal.judgeSite([ok("/health"), ok("/api/items")], base, null).status, "up");
+    const broken = _internal.judgeSite([ok("/health"), { url: `${base}/api/items`, code: 500, ms: 9 }], base, null);
+    assert.strictEqual(broken.status, "down");
+    assert.ok(broken.note_fa.includes("/api/items") && broken.note_fa.includes("۵۰۰"), broken.note_fa);
+    assert.strictEqual(_internal.judgeSite([{ url: base, code: null, ms: 4000 }], base, null).status, "down");
+    assert.strictEqual(_internal.judgeSite([ok("/", 4000)], base, null).status, "degraded");
+    const stopped = { ok: true, data: [{ state: "stopped" }] };
+    assert.strictEqual(_internal.judgeSite([ok("/")], base, stopped).status, "down");
+    const partial = { ok: true, data: [{ state: "running" }, { state: "restarting" }] };
+    assert.strictEqual(_internal.judgeSite([ok("/")], base, partial).status, "degraded");
+  });
+
+  it("guides the domain without duplicate placeholder steps", () => {
+    const { _internal } = require("../apps/web/lib/simple.js");
+    const noNs = _internal.domainSteps(true, []);
+    assert.strictEqual(noNs.length, 2, "no NS step before the zone exists");
+    assert.ok(noNs.every((s) => !s.copy && !s.text_fa.includes("سرورهای نام بعد")));
+    const withNs = _internal.domainSteps(true, ["ns1.example.test", "ns2.example.test"]);
+    assert.strictEqual(withNs.length, 5);
+    assert.strictEqual(new Set(withNs.map((s) => s.text_fa)).size, withNs.length, "no two identical steps");
+    assert.deepStrictEqual(withNs.filter((s) => s.copy).map((s) => s.copy), ["ns1.example.test", "ns2.example.test"]);
+    const example = _internal.domainSteps(false, ["ns1.liara.ir"], true);
+    assert.ok(example.some((s) => s.text_fa.includes("نمونه")), "examples are labelled");
+  });
+
+  it("explains a wrong key in one plain sentence (errors.ts 401 and network copy)", () => {
+    const { mapHttpError, networkError } = require("../build/liara-client/src/index.js");
+    const bad = mapHttpError(401);
+    assert.ok(bad.what_fa.includes("این کلید درست نیست یا منقضی شده"), bad.what_fa);
+    assert.ok(bad.next_fa.includes("console.liara.ir/API") && bad.next_fa.includes("کلید"), bad.next_fa);
+    assert.ok(networkError("boom").what_fa.includes("به لیارا دسترسی نداریم"));
+  });
+
   it("packSource never uploads .sokan/ (local state and credentials)", async () => {
     const { packSource } = require("../build/liara-client/src/index.js");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sokan-pack-"));
@@ -391,6 +442,17 @@ describe("Simple API, simulated (try) flow", () => {
     assert.ok(fs.existsSync(path.join(stateDir, "site.json")), "site remembered on disk");
   });
 
+  it("marks the site down after scenario-2 (the fresh probe of /api/items gets a 500)", async () => {
+    const demo = await api(server.base, "POST", "/api/demo/scenario-2-error500", {});
+    assert.strictEqual(demo.status, 200);
+    const down = await waitFor(async () => {
+      const s = await api(server.base, "GET", "/api/simple/session");
+      return s.json.site && s.json.site.status === "down" ? s.json : null;
+    }, 20000, 500);
+    assert.ok(down, "site card turns red within the wait");
+    assert.ok(down.site.statusNote_fa && down.site.statusNote_fa.includes("/api/items"), down.site.statusNote_fa);
+  });
+
   it("diagnoses the scenario-2 error, confirms the fix and verifies it", async () => {
     const demo = await api(server.base, "POST", "/api/demo/scenario-2-error500", {});
     assert.strictEqual(demo.status, 200);
@@ -398,13 +460,22 @@ describe("Simple API, simulated (try) flow", () => {
     assert.strictEqual(dx.json.ok, true);
     assert.strictEqual(dx.json.found, true, dx.text);
     assert.ok(dx.json.problem_fa && dx.json.solution_fa);
+    assert.ok(dx.json.problem_fa.includes("DATABASE_URL"), `the variable is named: ${dx.json.problem_fa}`);
     assert.ok(dx.json.confirm, "a one-tap fix card");
+    const bullets = dx.json.confirm.bullets_fa;
+    assert.ok(bullets.length >= 2 && bullets.length <= 3, JSON.stringify(bullets));
+    assert.ok(bullets.every((b) => typeof b === "string" && b.length > 0), "no empty bullet");
     const done = await api(server.base, "POST", `/api/simple/confirm/${dx.json.confirm.approvalId}`, {});
     const result = await waitResult(events.events, done.json.jobId);
     assert.ok(result, "fix result arrived");
     assert.strictEqual(result.data.ok, true, result.data.message_fa);
     assert.ok(result.data.message_fa.startsWith("درست شد ✅"), result.data.message_fa);
     assert.strictEqual(result.data.verification.passed, true);
+    const green = await waitFor(async () => {
+      const s = await api(server.base, "GET", "/api/simple/session");
+      return s.json.site && s.json.site.status === "up" ? s.json : null;
+    }, 20000, 500);
+    assert.ok(green, "card green again after the fix");
   });
 
   it("returns the domain guide for .ir with five steps, and no card in simulation", async () => {

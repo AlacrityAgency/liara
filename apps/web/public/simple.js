@@ -10,16 +10,33 @@
     redeploy: 'در حال انتشار نسخه‌ی جدید…',
     fix: 'در حال درست کردن…',
     domain: 'در حال وصل کردن دامنه…',
+    zone: 'در حال ساختن منطقه‌ی DNS…',
   };
-
-  var nf = new Intl.NumberFormat('fa-IR');
-  var dtf = null;
-  try { dtf = new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium', timeStyle: 'short' }); } catch (_) { dtf = null; }
+  // Phases under the progress bar: [server step, Persian name]. Server steps not listed here are ignored.
+  var DEPLOY_PHASES = [
+    ['create', 'ساخت اپ'], ['envs', 'تنظیم متغیرها'], ['pack', 'بسته‌بندی'], ['upload', 'آپلود'],
+    ['build', 'ساخت (build)'], ['start', 'راه‌اندازی'], ['check', 'بررسی سلامت'],
+  ];
+  var PHASES = {
+    deploy: DEPLOY_PHASES,
+    redeploy: DEPLOY_PHASES,
+    fix: [['fix', 'اعمال تغییر'], ['verify', 'بررسی نتیجه']],
+    domain: [['domain', 'ثبت رکورد DNS'], ['fix', 'گواهی امن (SSL)']],
+    zone: [['domain', 'ساخت منطقه‌ی DNS']],
+  };
+  var SITE_POLL_MS = 15000;
+  var LIVE_THROTTLE_MS = 8000;
 
   var stage = document.getElementById('stage');
   var stepper = document.getElementById('stepper');
   var simBanner = document.getElementById('simBanner');
   var auditBanner = document.getElementById('auditBanner');
+  var footer = document.getElementById('footer');
+  var dlg = document.getElementById('confirmDlg');
+  var nf = new Intl.NumberFormat('fa-IR');
+  var dtf = null;
+  try { dtf = new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium', timeStyle: 'short' }); } catch (_) { dtf = null; }
+
   // Incident status labels from the diagnostics contract (IncidentStatus).
   var INCIDENT_FA = {
     investigating: 'در حال بررسی',
@@ -30,18 +47,21 @@
     mitigated: 'موقتاً مهار شد',
     unresolved: 'حل نشد',
   };
-  var footer = document.getElementById('footer');
-  var dlg = document.getElementById('confirmDlg');
 
   var state = {
     session: null,
     project: null,
     plans: null,
     planID: null,
-    job: null,        // { id, kind, finished, ui }
+    job: null,        // { id, kind, ui }
     pendingJob: false,
     early: [],        // SSE events that arrive before the job id is known
     es: null,
+    domainName: '',   // last domain typed, so the domain screen can resume after the zone is built
+    siteUi: null,     // live references into the site card, updated in place (no re-render)
+    sitePoll: null,
+    liveTimer: null,
+    lastLive: 0,
   };
 
   /* ---------- small helpers ---------- */
@@ -98,6 +118,8 @@
   }
 
   function setView(node) {
+    stopSitePolling();
+    state.siteUi = null;
     stage.replaceChildren(node);
     window.scrollTo(0, 0);
     var t = stage.querySelector('h2');
@@ -112,6 +134,12 @@
       what ? h('p', { class: 'n-what', text: what }) : null,
       why ? h('p', { class: 'n-why', text: why }) : null,
       next ? h('p', { class: 'n-next', text: next }) : null);
+  }
+
+  function working(text) {
+    return h('div', { class: 'working', role: 'status' },
+      h('span', { class: 'spin', 'aria-hidden': 'true' }),
+      h('p', { text: text }));
   }
 
   function errorOf(e) {
@@ -152,7 +180,7 @@
     }
   }
 
-  // Calls the Simple API. Throws {ok:false, error:{...}} or {unauthorized:true}.
+  // Calls the Simple API. Throws {ok:false, error:{...}} or {unauthorized:true} (console session missing).
   async function api(path, method, body) {
     var opts = { method: method || 'GET', credentials: 'same-origin', headers: HEADERS };
     opts.body = JSON.stringify(body === undefined ? {} : body);
@@ -168,11 +196,12 @@
         next_fa: 'چند ثانیه صبر کن و دوباره امتحان کن.',
       } };
     }
-    if (res.status === 401) throw { unauthorized: true };
     var data = null;
     try { data = await res.json(); } catch (_) { data = null; }
+    // A 401 with a structured error is a Liara answer (a wrong or expired key), not a missing console session.
+    if (res.status === 401 && !(data && data.error && typeof data.error === 'object')) throw { unauthorized: true };
     if (!res.ok || !data || data.ok === false) {
-      throw { ok: false, error: (data && data.error) || {
+      throw { ok: false, error: (data && data.error && typeof data.error === 'object') ? data.error : {
         code: 'http_' + res.status,
         what_fa: 'این کار انجام نشد.',
         why_fa: 'سرور جواب درستی نداد (کد ' + fa(res.status) + ').',
@@ -219,6 +248,7 @@
 
   /* ---------- chrome: stepper, banner, footer, gate ---------- */
 
+  // n = 1..4 marks that step active; 5 marks all four done (deploy finished).
   function setStep(n) {
     if (!n) { stepper.hidden = true; return; }
     stepper.hidden = false;
@@ -239,6 +269,7 @@
   }
 
   function showGate() {
+    stopSitePolling();
     if (state.es) { try { state.es.close(); } catch (_) { /* ignore */ } state.es = null; }
     closeDialog();
     simBanner.hidden = true;
@@ -395,20 +426,26 @@
     renderProject();
   }
 
+  /** Last segment of the folder path: the name a vibe coder recognises. */
+  function folderName(dir) {
+    var parts = String(dir || '').split(/[\\/]+/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '—';
+  }
+
   function renderProject() {
     var p = state.project;
     var envs = p.envs || [];
     var errBox = h('div', { class: 'err-box' });
 
-    // folder path with «تغییر»
+    // folder path edit («تغییر پوشه»)
     var dirInput = h('input', { id: 'dirInput', type: 'text', class: 'ltr', value: p.dir || '', spellcheck: 'false', autocomplete: 'off' });
     var dirSave = h('button', { type: 'button', class: 'btn ghost small', text: 'ذخیره' });
     var dirCancel = h('button', { type: 'button', class: 'link-btn', text: 'انصراف' });
     var dirEdit = h('div', { class: 'stack', hidden: true },
-      h('label', { class: 'label', for: 'dirInput', text: 'مسیر پوشه‌ی پروژه' }),
+      h('label', { class: 'label', for: 'dirInput', text: 'مسیر پوشه‌ی سایت' }),
       dirInput,
       h('div', { class: 'row' }, dirSave, dirCancel));
-    var changeBtn = h('button', { type: 'button', class: 'link-btn', text: 'تغییر' });
+    var changeBtn = h('button', { type: 'button', class: 'btn ghost small', text: 'تغییر پوشه' });
     changeBtn.addEventListener('click', function () {
       dirEdit.hidden = false;
       dirInput.focus();
@@ -416,7 +453,7 @@
     dirCancel.addEventListener('click', function () { dirEdit.hidden = true; });
     dirSave.addEventListener('click', async function () {
       var dir = dirInput.value.trim();
-      if (!dir) { errBox.replaceChildren(notice('err', 'مسیر خالی است.', '', 'مسیر پوشه‌ی پروژه‌ات را بنویس.')); return; }
+      if (!dir) { errBox.replaceChildren(notice('err', 'مسیر خالی است.', '', 'مسیر پوشه‌ی سایتت را بنویس.')); return; }
       errBox.replaceChildren();
       busy(dirSave, true, '…');
       try {
@@ -429,11 +466,14 @@
       }
     });
 
-    var pathRow = h('div', { class: 'row-between' },
-      h('div', { class: 'grow' },
-        h('p', { class: 'label', text: 'پوشه‌ی پروژه' }),
-        h('code', { class: 'ltr', text: p.dir || '—' })),
-      changeBtn);
+    // «این پوشه‌ی سایتت است؟» — the Sokan repo itself is never the default site: the demo is suggested.
+    var yes = h('button', { type: 'button', class: 'btn primary', text: p.isSokanRepo ? 'از پوشه‌ی نمونه استفاده کن' : 'بله' });
+    var question = h('p', { class: 'folder-question', text: p.isSokanRepo
+      ? 'این پوشه خود سُکان است، نه سایت تو. پوشه‌ی نمونه‌ی یک سایت را پیشنهاد می‌کنم.'
+      : 'این پوشه‌ی سایتت است؟' });
+    var answered = h('p', { class: 'folder-answer', hidden: true, text: '✓ این پوشه‌ی سایتت است' });
+    var questionRow = h('div', { class: 'row' }, yes, changeBtn);
+    var questionBox = h('div', { class: 'stack' }, question, questionRow, answered);
 
     // env inputs
     var envInputs = envs.map(function (e, i) {
@@ -499,19 +539,46 @@
       }
     });
 
-    var summary = p.summary_fa || 'پروژه‌ات را خواندم.';
-    setView(card(
-      h('h2', { text: 'پروژه‌ات' }),
-      h('p', { class: 'summary', text: summary }),
-      pathRow,
-      dirEdit,
+    // Asked only after «بله»: the rest of the form waits until the folder is confirmed.
+    var rest = h('div', { class: 'stack-lg', hidden: !!p.isSokanRepo },
       envBlock,
       h('div', { class: 'field' },
         h('label', { class: 'label', for: 'appName', text: 'نام سایت' }),
         nameInput,
         h('p', { class: 'muted small', text: 'فقط حروف انگلیسی کوچک، عدد و خط تیره.' })),
       errBox,
-      cont
+      cont);
+
+    yes.addEventListener('click', async function () {
+      if (!p.isSokanRepo) {
+        questionRow.hidden = true;
+        question.hidden = true;
+        answered.hidden = false;
+        rest.hidden = false;
+        return;
+      }
+      errBox.replaceChildren();
+      busy(yes, true, '…');
+      try {
+        var sug = await api('/api/simple/project', 'POST', { dir: p.suggestDir });
+        state.project = sug.project;
+        renderProject();
+      } catch (e) {
+        busy(yes, false);
+        failInto(errBox, e);
+      }
+    });
+
+    setView(card(
+      h('h2', { text: 'پروژه‌ات' }),
+      h('div', { class: 'folder' },
+        h('p', { class: 'folder-label muted small', text: 'پوشه‌ی سایت' }),
+        h('p', { class: 'folder-name', text: folderName(p.dir) }),
+        h('p', { class: 'folder-path ltr muted small', text: p.dir || '' }),
+        h('p', { class: 'summary', text: p.summary_fa || 'پروژه‌ات را خواندم.' })),
+      questionBox,
+      dirEdit,
+      rest
     ));
   }
 
@@ -769,7 +836,7 @@
 
   function startJob(jobId, kind) {
     state.pendingJob = false;
-    state.job = { id: jobId || null, kind: kind, finished: false, ui: null };
+    state.job = { id: jobId || null, kind: kind, ui: null };
     renderProgress();
     var early = state.early;
     state.early = [];
@@ -778,31 +845,57 @@
 
   function renderProgress() {
     var j = state.job;
+    var phases = PHASES[j.kind] || [];
     var fill = h('div', { class: 'fill' });
     var bar = h('div', { class: 'bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0' }, fill);
     var pct = h('p', { class: 'pct', text: '۰٪' });
     var msg = h('p', { class: 'step-msg', text: 'در حال شروع…' });
+    var items = phases.map(function (ph) {
+      return h('li', { class: 'pending' },
+        h('span', { class: 'mark', 'aria-hidden': 'true', text: '○' }),
+        h('span', { text: ph[1] }));
+    });
     var logList = h('ol', { class: 'log' });
-    j.ui = { fill: fill, bar: bar, pct: pct, msg: msg, logList: logList };
-    setStep(j.kind === 'deploy' ? 4 : 0);
+    j.ui = { fill: fill, bar: bar, pct: pct, msg: msg, logList: logList, items: items, phases: phases, shown: 0, phase: -1 };
+    setStep(j.kind === 'deploy' || j.kind === 'redeploy' ? 4 : 0);
+    var spin = h('span', { class: 'spin', 'aria-hidden': 'true' });
     setView(card(
       h('h2', { text: TITLES[j.kind] || 'در حال انجام…' }),
       h('div', { class: 'progress' }, bar, pct),
-      msg,
+      phases.length ? h('ol', { class: 'phases' }, items) : null,
+      h('div', { class: 'working', role: 'status' }, spin, msg),
       h('details', { class: 'details' },
         h('summary', { text: 'جزئیات' }),
         logList)
     ));
   }
 
+  /** Ticks the checklist: phases before the reported one are done, the reported one is current. Never moves back. */
+  function markPhase(u, step) {
+    if (!u.items.length) return;
+    var idx = -1;
+    if (step === 'done') idx = u.items.length;
+    else u.phases.forEach(function (ph, i) { if (ph[0] === step) idx = i; });
+    if (idx < 0 || idx < u.phase) return;
+    u.phase = idx;
+    u.items.forEach(function (li, i) {
+      var st = i < idx ? 'done' : (i === idx ? 'current' : 'pending');
+      li.className = st;
+      li.querySelector('.mark').textContent = st === 'done' ? '✓' : (st === 'current' ? '…' : '○');
+    });
+  }
+
   function applyProgress(d) {
     var u = state.job && state.job.ui;
     if (!u) return;
-    var p = clamp(Math.round(Number(d.percent) || 0), 0, 100);
-    u.fill.style.width = p + '%';
-    u.bar.setAttribute('aria-valuenow', String(p));
-    u.pct.textContent = fa(p) + '٪';
+    var p = d.step === 'done' ? 100 : clamp(Math.round(Number(d.percent) || 0), 0, 100);
+    // Percent only moves forward; the bar's CSS transition makes each phase glide.
+    u.shown = Math.max(u.shown, p);
+    u.fill.style.width = u.shown + '%';
+    u.bar.setAttribute('aria-valuenow', String(u.shown));
+    u.pct.textContent = fa(u.shown) + '٪';
     if (d.message_fa) u.msg.textContent = String(d.message_fa);
+    markPhase(u, d.step);
     var line = [d.message_fa, d.detail].filter(Boolean).join(' — ');
     if (line && (!u.logList.lastChild || u.logList.lastChild.textContent !== line)) {
       u.logList.appendChild(h('li', { text: line }));
@@ -810,6 +903,7 @@
   }
 
   async function applyResult(d) {
+    if (!state.job) return;
     var kind = state.job.kind;
     state.job = null;
     if (!d.ok) return viewFailed(d, kind);
@@ -819,14 +913,15 @@
       return viewFixed(d);
     }
     if (kind === 'domain') return viewDomainDone(d.message_fa, d.url);
+    if (kind === 'zone') return showDomain(state.domainName, d.message_fa);
     try {
       await refreshSession();
     } catch (e) {
       if (e && e.unauthorized) return showGate();
     }
+    // The success line is the title; the URL line below it is the only subtitle.
     showSite({
       hero: kind === 'redeploy' ? 'نسخه‌ی جدید منتشر شد ✅' : 'سایتت آنلاین شد 🎉',
-      message: d.message_fa || '',
       url: d.url || '',
     });
   }
@@ -850,6 +945,10 @@
     ['simple_progress', 'simple_result'].forEach(function (name) {
       es.addEventListener(name, function (ev) { handleEvent(name, parse(ev.data)); });
     });
+    // Server state and probe events: refresh the site card so a broken site turns red without a reload.
+    ['state', 'probe'].forEach(function (name) {
+      es.addEventListener(name, function () { onLiveEvent(); });
+    });
     es.onmessage = function (ev) {
       var d = parse(ev.data);
       if (!d || typeof d !== 'object') return;
@@ -859,17 +958,22 @@
     };
   }
 
+  /** Result of a fix: the title says it once; the line under it is the before/after only. */
+  function beforeAfter(message) {
+    var m = String(message || '');
+    if (m.indexOf('درست شد') !== 0) return m;
+    var i = m.indexOf('—');
+    return i >= 0 ? m.slice(i + 1).trim() : '';
+  }
+
   function viewFixed(d) {
     setStep(0);
-    var kids = [
+    var line = beforeAfter(d.message_fa) || (d.verification && d.verification.summary_fa) || '';
+    setView(card(
       h('h2', { text: 'درست شد ✅' }),
-      d.message_fa ? h('p', { class: 'lead', text: d.message_fa }) : null,
-    ];
-    if (d.verification && d.verification.summary_fa) {
-      kids.push(notice('ok', 'قبل و بعد', d.verification.summary_fa, ''));
-    }
-    kids.push(h('button', { type: 'button', class: 'btn primary', text: 'سایتم را ببینم', onclick: function () { reloadRoute(); } }));
-    setView(card.apply(null, kids));
+      line ? h('p', { class: 'lead', text: line }) : null,
+      h('button', { type: 'button', class: 'btn primary', text: 'برگشت به سایتم', onclick: function () { reloadRoute(); } })
+    ));
   }
 
   /** The restart held, but the leak is still in the code: say so, and hand over the Fix Brief. */
@@ -883,7 +987,7 @@
       kids.push(notice('warn', 'قبل و بعد', d.verification.summary_fa, ''));
     }
     if (d.fixBriefMarkdown) kids.push(copyBtn(d.fixBriefMarkdown, 'برای Cursor/Claude کپی کن', 'btn primary'));
-    kids.push(h('button', { type: 'button', class: 'btn ghost', text: 'سایتم را ببینم', onclick: function () { reloadRoute(); } }));
+    kids.push(h('button', { type: 'button', class: 'btn ghost', text: 'برگشت به سایتم', onclick: function () { reloadRoute(); } }));
     setView(card.apply(null, kids));
   }
 
@@ -896,24 +1000,29 @@
     if (url) {
       kids.push(h('a', { class: 'btn primary', href: url, target: '_blank', rel: 'noopener', text: url + ' ↗' }));
     }
-    kids.push(h('button', { type: 'button', class: 'link-btn center', text: 'برگشت به سایت', onclick: function () { reloadRoute(); } }));
+    kids.push(h('button', { type: 'button', class: 'link-btn center', text: 'برگشت به سایتم', onclick: function () { reloadRoute(); } }));
     setView(card.apply(null, kids));
   }
 
   function viewFailed(d, kind) {
-    setStep(0);
+    var deployish = kind === 'deploy' || kind === 'redeploy';
+    setStep(deployish ? 4 : 0);
     var titles = {
       fix: 'هنوز درست نشده',
       domain: 'دامنه وصل نشد',
+      zone: 'منطقه‌ی DNS ساخته نشد',
       redeploy: 'نسخه‌ی جدید منتشر نشد',
       deploy: 'انتشار کامل نشد',
     };
     var retry = {
-      fix: function () { showDiagnose(); },
-      domain: function () { showDomain(); },
+      fix: function () { runDiagnoseNow(); },
+      domain: function () { showDomain(state.domainName); },
+      zone: function () { showDomain(state.domainName); },
       redeploy: function () { reloadRoute(); },
       deploy: function () { showPublish(); },
     };
+    // The site exists (it answered, or only the check failed): offer the site, not another publish.
+    var again = (deployish && d.url) ? { text: 'سایتم را ببینم', fn: reloadRoute } : { text: 'دوباره امتحان کن', fn: retry[kind] || reloadRoute };
     var techErr = typeof d.error === 'string' ? d.error : ((d.error && (d.error.what_fa || d.error.why_fa || d.error.message)) || '');
     var brief = d.fixBriefMarkdown || '';
     var kids = [
@@ -921,7 +1030,7 @@
       h('p', { class: 'lead', text: d.message_fa || 'یک مشکل پیش آمد.' }),
     ];
     if (brief) kids.push(copyBtn(brief, 'برای Cursor/Claude کپی کن', 'btn primary'));
-    kids.push(h('button', { type: 'button', class: 'btn ghost', text: 'دوباره امتحان کن', onclick: retry[kind] || reloadRoute }));
+    kids.push(h('button', { type: 'button', class: 'btn ghost', text: again.text, onclick: again.fn }));
     if (techErr || brief) {
       kids.push(technicalDetails([
         techErr ? h('pre', { class: 'log-pre', text: String(techErr) }) : null,
@@ -936,35 +1045,84 @@
   function statusInfo(s) {
     var map = {
       up: ['up', 'آنلاین است'],
-      degraded: ['degraded', 'کند است یا گاهی خطا می‌دهد'],
-      down: ['down', 'خاموش است یا کار نمی‌کند'],
+      degraded: ['degraded', 'سایت کند است'],
+      down: ['down', 'سایت خطا می‌دهد'],
     };
     return map[s] || ['unknown', 'وضعیت نامشخص است'];
   }
 
+  /** Writes the site verdict into the card that is on screen. Does nothing when another screen is shown. */
+  function paintSite(s) {
+    var ui = state.siteUi;
+    if (!ui) return;
+    var st = statusInfo(s.status);
+    ui.panel.setAttribute('data-state', st[0]);
+    ui.dot.className = 'status-dot ' + st[0];
+    ui.label.textContent = st[1];
+    ui.note.textContent = s.statusNote_fa || '';
+    ui.note.hidden = !s.statusNote_fa;
+    ui.fix.hidden = !(s.status === 'down' || s.status === 'degraded');
+    // A success title ("online") is only true while the site is up; otherwise the card says just the name.
+    if (ui.title) ui.title.textContent = (ui.hero && st[0] === 'up') ? ui.hero : 'سایتت';
+  }
+
+  async function refreshSiteStatus() {
+    if (!state.siteUi || document.hidden) return;
+    try {
+      await refreshSession();
+    } catch (e) {
+      if (e && e.unauthorized) showGate();
+      return;
+    }
+    if (!state.siteUi) return;
+    paintSite((state.session && state.session.site) || {});
+  }
+
+  function startSitePolling() {
+    stopSitePolling();
+    state.sitePoll = setInterval(refreshSiteStatus, SITE_POLL_MS);
+  }
+
+  function stopSitePolling() {
+    if (state.sitePoll) { clearInterval(state.sitePoll); state.sitePoll = null; }
+    if (state.liveTimer) { clearTimeout(state.liveTimer); state.liveTimer = null; }
+  }
+
+  /** SSE state/probe events: refresh at most every few seconds, and only while the site card is shown. */
+  function onLiveEvent() {
+    if (!state.siteUi || state.liveTimer) return;
+    var wait = Math.max(0, LIVE_THROTTLE_MS - (Date.now() - state.lastLive));
+    state.liveTimer = setTimeout(function () {
+      state.liveTimer = null;
+      state.lastLive = Date.now();
+      refreshSiteStatus();
+    }, wait);
+  }
+
   function showSite(opts) {
-    setStep(0);
+    setStep(opts && opts.hero ? 5 : 0);
     var s = (state.session && state.session.site) || {};
     var url = (opts && opts.url) || s.url || '';
     var errBox = h('div', { class: 'err-box' });
-    var st = statusInfo(s.status);
+    var dot = h('span', { class: 'status-dot', 'aria-hidden': 'true' });
+    var label = h('span', { class: 'status-label' });
+    var note = h('p', { class: 'status-note', hidden: true });
+    var fix = h('button', { type: 'button', class: 'btn primary', text: 'بررسی و درست کردن' });
+    fix.addEventListener('click', function () { runDiagnoseNow(); });
+    var panel = h('div', { class: 'site-status', 'data-state': 'unknown' },
+      h('div', { class: 'status-row' }, dot, label),
+      note,
+      fix);
 
-    var kids = [];
-    if (opts && opts.hero) {
-      kids.push(h('h2', { class: 'hero', text: opts.hero }));
-      if (opts.message) kids.push(h('p', { class: 'lead', text: opts.message }));
-    } else {
-      kids.push(h('h2', { text: 'سایتت' }));
-    }
-    kids.push(h('div', { class: 'status-row' },
-      h('span', { class: 'status-dot ' + st[0], 'aria-hidden': 'true' }),
-      h('span', { text: st[1] })));
+    var title = h('h2', { class: opts && opts.hero ? 'hero' : '', text: 'سایتت' });
+    var kids = [title];
+    kids.push(panel);
     if (url) {
       kids.push(h('div', { class: 'url-row' },
         h('a', { class: 'url ltr', href: url, target: '_blank', rel: 'noopener', text: url }),
         copyBtn(url, 'کپی لینک')));
       if (opts && opts.hero) {
-        kids.push(h('a', { class: 'btn primary', href: url, target: '_blank', rel: 'noopener', text: 'باز کردن سایت ↗' }));
+        kids.push(h('a', { class: 'btn ghost', href: url, target: '_blank', rel: 'noopener', text: 'باز کردن سایت ↗' }));
       }
     }
     var meta = [];
@@ -993,13 +1151,37 @@
 
     kids.push(h('div', { class: 'site-actions' },
       redeployBtn,
-      h('button', { type: 'button', class: 'btn ghost', text: 'اتصال دامنه', onclick: function () { showDomain(); } }),
+      h('button', { type: 'button', class: 'btn ghost', text: 'اتصال دامنه', onclick: function () { showDomain(''); } }),
       h('button', { type: 'button', class: 'btn ghost', text: 'سایتم مشکل داره', onclick: function () { showDiagnose(); } })));
 
     setView(card.apply(null, kids));
+    state.siteUi = { panel: panel, dot: dot, label: label, note: note, fix: fix, title: title, hero: (opts && opts.hero) || '' };
+    paintSite(s);
+    startSitePolling();
   }
 
   /* ---------- diagnose ---------- */
+
+  /** One tap from the site card: runs the diagnosis at once, then offers the fix card. */
+  function runDiagnoseNow() {
+    var box = h('div', { class: 'stack-lg' });
+    var wait = working('در حال بررسی…');
+    setStep(0);
+    setView(card(
+      h('h2', { text: 'بررسی سایتت' }),
+      wait,
+      box,
+      h('button', { type: 'button', class: 'link-btn center', text: 'برگشت به سایتم', onclick: function () { reloadRoute(); } })
+    ));
+    api('/api/simple/diagnose', 'POST', {}).then(function (d) {
+      wait.remove();
+      renderDiagnosis(box, d);
+    }, function (e) {
+      if (e && e.unauthorized) return showGate();
+      wait.remove();
+      box.replaceChildren(errNotice(e));
+    });
+  }
 
   function showDiagnose() {
     setStep(0);
@@ -1034,7 +1216,7 @@
       errBox,
       go,
       result,
-      h('button', { type: 'button', class: 'link-btn center', text: 'برگشت', onclick: function () { reloadRoute(); } })
+      h('button', { type: 'button', class: 'link-btn center', text: 'برگشت به سایتم', onclick: function () { reloadRoute(); } })
     ));
   }
 
@@ -1099,85 +1281,95 @@
 
   /* ---------- domain ---------- */
 
-  function showDomain() {
+  /** Domain screen. A non-empty prefill is looked up at once (used after the zone was built). */
+  function showDomain(prefill, message) {
     setStep(0);
-    var input = h('input', { id: 'domain', type: 'text', class: 'ltr', placeholder: 'example.ir', autocomplete: 'off', spellcheck: 'false', inputmode: 'url' });
+    var domain0 = prefill || '';
+    var input = h('input', { id: 'domain', type: 'text', class: 'ltr', placeholder: 'example.ir', value: domain0, autocomplete: 'off', spellcheck: 'false', inputmode: 'url' });
     var errBox = h('div', { class: 'err-box' });
-    var plan = h('div', { class: 'stack-lg' });
-    var go = h('button', { type: 'button', class: 'btn primary', text: 'ادامه' });
+    var out = h('div', { class: 'stack-lg' });
+    var go = h('button', { type: 'submit', class: 'btn primary', text: 'ادامه' });
 
-    go.addEventListener('click', async function () {
+    function lookup() {
       var domain = input.value.trim().toLowerCase();
       errBox.replaceChildren();
-      plan.replaceChildren();
+      out.replaceChildren();
       if (!domain) {
         errBox.replaceChildren(notice('err', 'دامنه را ننوشتی.', '', 'مثلاً mysite.ir را بنویس.'));
         input.focus();
         return;
       }
+      state.domainName = domain;
       busy(go, true, '…');
-      try {
-        var r = await api('/api/simple/domain', 'POST', { domain: domain });
+      api('/api/simple/domain', 'POST', { domain: domain }).then(function (r) {
         busy(go, false);
-        renderDomainSteps(plan, errBox, r, domain);
-      } catch (e) {
+        renderDomainSteps(out, errBox, r, domain);
+      }, function (e) {
         busy(go, false);
         failInto(errBox, e);
-      }
-    });
+      });
+    }
 
-    setView(card(
-      h('h2', { text: 'اتصال دامنه' }),
-      h('p', { class: 'lead', text: 'اگر دامنه‌ای داری، می‌توانی به سایتت وصل کنی.' }),
+    // Enter in the domain field submits the form.
+    var form = h('form', { class: 'stack', novalidate: true },
       h('div', { class: 'field' },
         h('label', { class: 'label', for: 'domain', text: 'نام دامنه' }),
         input),
       errBox,
-      go,
-      plan,
-      h('button', { type: 'button', class: 'link-btn center', text: 'برگشت', onclick: function () { reloadRoute(); } })
+      go);
+    form.addEventListener('submit', function (ev) { ev.preventDefault(); lookup(); });
+
+    setView(card(
+      h('h2', { text: 'اتصال دامنه' }),
+      h('p', { class: 'lead', text: 'اگر دامنه‌ای داری، می‌توانی به سایتت وصل کنی.' }),
+      message ? notice('ok', message, '', '') : null,
+      form,
+      out,
+      h('button', { type: 'button', class: 'link-btn center', text: 'برگشت به سایتم', onclick: function () { reloadRoute(); } })
     ));
+    if (domain0) lookup();
   }
 
   function renderDomainSteps(box, errBox, r, domain) {
-    var steps = (r.steps || []).map(function (s, i) {
+    var kids = [];
+    var steps = (r.steps || []).map(function (s) {
       return h('li', null,
-        h('span', { class: 'num', text: fa(s.n || i + 1) }),
+        h('span', { class: 'num', text: fa(s.n) }),
         h('div', { class: 'stack' },
           h('p', { text: s.text_fa || '' }),
           s.copy ? h('div', { class: 'ns-row' }, h('code', { text: s.copy }), copyBtn(s.copy, 'کپی')) : null));
     });
-    var ns = (r.nameservers || []).map(function (n) {
-      return h('div', { class: 'ns-row' }, h('code', { text: n }), copyBtn(n, 'کپی'));
-    });
-    var checkErr = h('div', { class: 'err-box' });
-    var check = h('button', { type: 'button', class: 'btn primary', text: 'انجام دادم، بررسی کن' });
-
-    check.addEventListener('click', async function () {
-      checkErr.replaceChildren();
-      busy(check, true, 'در حال بررسی…');
-      try {
-        var c = await api('/api/simple/domain/check', 'POST', { domain: domain });
-        busy(check, false);
-        if (c.propagated) {
-          if (c.confirm) return openConfirmOrFail(c.confirm, 'domain', checkErr);
-          return viewDomainDone(c.message_fa, c.url || ('https://' + domain));
-        }
-        checkErr.replaceChildren(notice('info', c.message_fa || 'هنوز به سُکان نرسیده.', '', 'چند دقیقه دیگر دوباره بزن.'));
-      } catch (e) {
-        busy(check, false);
-        failInto(checkErr, e);
-      }
-    });
-
-    var kids = [];
     if (steps.length) kids.push(h('ol', { class: 'steps' }, steps));
-    if (ns.length) {
-      kids.push(h('div', { class: 'ns-block' },
-        h('p', { class: 'label', text: 'نام‌سرورها (Nameserver)' }),
-        ns));
+    if (r.nsNote_fa) kids.push(h('p', { class: 'muted small', text: r.nsNote_fa }));
+    if (r.exampleNameservers) {
+      kids.push(h('p', { class: 'muted small', text: 'سرورهای نام بالا نمونه‌اند؛ مقدارهای واقعی را بعد از ساخت منطقه در حساب لیارا می‌بینی.' }));
     }
-    kids.push(check, checkErr);
+
+    var checkErr = h('div', { class: 'err-box' });
+    if (r.confirm) {
+      // The zone has to exist before its name servers can be shown.
+      kids.push(h('button', { type: 'button', class: 'btn primary', text: 'منطقه‌ی DNS را بساز', onclick: function () { openConfirmOrFail(r.confirm, 'zone', checkErr); } }));
+    } else {
+      var check = h('button', { type: 'button', class: 'btn primary', text: 'انجام دادم، بررسی کن' });
+      check.addEventListener('click', async function () {
+        checkErr.replaceChildren();
+        busy(check, true, 'در حال بررسی…');
+        try {
+          var c = await api('/api/simple/domain/check', 'POST', { domain: domain });
+          busy(check, false);
+          if (c.propagated) {
+            if (c.confirm) return openConfirmOrFail(c.confirm, 'domain', checkErr);
+            return viewDomainDone(c.message_fa, c.url || ('https://' + domain));
+          }
+          checkErr.replaceChildren(notice('info', c.message_fa || 'هنوز به سُکان نرسیده.', '', 'چند دقیقه دیگر دوباره بزن.'));
+        } catch (e) {
+          busy(check, false);
+          failInto(checkErr, e);
+        }
+      });
+      kids.push(check);
+    }
+    kids.push(checkErr);
     box.replaceChildren.apply(box, kids);
     if (!r.isIr) {
       errBox.replaceChildren(notice('info', 'این دامنه را در پنل ثبت‌کننده‌ی دامنه‌ات تنظیم کن.', '', 'مراحل بالا را دنبال کن و بعد دکمه‌ی «بررسی» را بزن.'));

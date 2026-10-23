@@ -25,6 +25,7 @@ const ENV_KEY_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const ESTIMATE_HOURLY_TOMANS = { "g2-small": 100, "g2-medium": 220, "g2-pro": 440 };
 const HOURS_PER_MONTH = 720;
 const PROBE_TIMEOUT_MS = 4000;
+const SLOW_MS = 2500;
 const LIVE_URL_WAIT_MS = 90000;
 const SIM_URL_WAIT_MS = 5000;
 const URL_POLL_MS = 3000;
@@ -44,39 +45,161 @@ const PLATFORM_LABELS = {
   dotnet: ".NET", docker: "داکر",
 };
 
-// Plain words for the top hypothesis (no ids, no jargon). Keys are hypothesis ids without the "hyp_" prefix.
-const PLAIN = {
-  missing_env: ["یکی از تنظیمات ضروری سایت در لیارا وارد نشده است.", "تنظیم جاافتاده را اضافه می‌کنم و سایت را دوباره راه می‌اندازم."],
-  deploy_regression: ["نسخه‌ی تازه‌ی سایت بعد از انتشار خراب شده است.", "به نسخه‌ی قبلی که درست کار می‌کرد برمی‌گردم."],
-  oom_leak: ["سایت حافظه‌اش پر می‌شود و از کار می‌افتد.", "سایت را یک‌بار دوباره راه می‌اندازم تا حافظه آزاد شود."],
-  leak_no_oom: ["سایت کم‌کم حافظه‌اش را پر می‌کند.", "سایت را دوباره راه می‌اندازم تا پیش از پر شدن حافظه آزاد شود."],
-  undersized_plan: ["پلن فعلی سایت برای حجم کارش کوچک است.", "پلن را به نسخه‌ی بزرگ‌تر تغییر می‌دهم."],
-  cpu_saturation: ["پردازنده‌ی سایت زیر بار سنگین است.", "پلنی با پردازنده‌ی بیشتر را پیشنهاد می‌کنم."],
-  port_mismatch: ["پورت سایت با پورتی که برنامه روی آن گوش می‌دهد یکی نیست.", "پورت را به پورت درست تغییر می‌دهم."],
-  db_unreachable: ["سایت به پایگاه داده وصل نمی‌شود.", "اتصال پایگاه داده را اصلاح و سایت را دوباره راه می‌اندازم."],
-  db_pool: ["اتصال‌های پایگاه داده‌ی سایت تمام شده است.", "متن راهنما را برای Cursor یا Claude کپی کنید تا کد اصلاح شود."],
-  cache_unreachable: ["سایت به سرویس کش وصل نمی‌شود.", "آدرس کش را اصلاح و سایت را دوباره راه می‌اندازم."],
-  disk_full: ["فضای دیسک سایت پر شده است.", "پلن با فضای بیشتر را پیشنهاد می‌کنم."],
-  upstream_slow: ["یک سرویس بیرونی که سایت به آن وصل است کند شده.", "متن راهنما را برای Cursor یا Claude کپی کنید تا زمان انتظار کد اصلاح شود."],
-  crash_loop: ["سایت پشت‌سرهم خراب و دوباره راه‌اندازی می‌شود.", "به نسخه‌ی پایدار قبلی برمی‌گردم."],
-  app_stopped: ["سایت خاموش است.", "سایت را روشن می‌کنم."],
-  code_exception: ["در کد سایت خطایی رخ می‌دهد که جلوی پاسخ را می‌گیرد.", "این را باید در کد برطرف کرد؛ متن راهنما را برای Cursor یا Claude کپی کنید."],
+// Hypothesis key (the id without "hyp_") -> the signal kinds that prove it, strongest first.
+const KEY_KINDS = {
+  missing_env: ["MISSING_ENV"],
+  deploy_regression: ["DEPLOY_REGRESSION"],
+  oom_leak: ["MEMORY_LEAK_TREND", "OOM_KILLED", "MEMORY_PRESSURE"],
+  leak_no_oom: ["MEMORY_LEAK_TREND"],
+  undersized_plan: ["MEMORY_PRESSURE", "OOM_KILLED"],
+  cpu_saturation: ["CPU_SATURATION"],
+  port_mismatch: ["PORT_MISMATCH"],
+  db_unreachable: ["DB_UNREACHABLE"],
+  db_pool: ["DB_POOL_EXHAUSTED"],
+  cache_unreachable: ["CACHE_UNREACHABLE"],
+  disk_full: ["DISK_FULL"],
+  upstream_slow: ["UPSTREAM_SLOW"],
+  crash_loop: ["CRASH_LOOP"],
+  app_stopped: ["APP_STOPPED"],
+  code_exception: ["APP_EXCEPTION"],
 };
+const DOWNTIME_FA = "حدود یک دقیقه؛ در این مدت سایت ممکن است کند یا قطع باشد.";
+const UPSTREAM_URL_RE = /https?:\/\/([a-z0-9.-]+)/i;
+const BARE_HOST_RE = /\b((?:[a-z0-9-]+\.)+(?:ir|com|net|org|io|dev|app|co))\b/i;
+const faDec = (n, digits) => (Number(n) || 0).toLocaleString("fa-IR", { maximumFractionDigits: digits });
+const faInt = (n) => Math.round(Number(n) || 0).toLocaleString("fa-IR", { useGrouping: false });
 
-const IR_STEPS = [
+function signalOf(incident, kinds) {
+  const list = (incident && incident.signals) || [];
+  for (const kind of kinds) {
+    const hit = list.find((s) => s.kind === kind);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Host of the upstream service, read from the signal's own evidence lines. Null when the logs name none. */
+function upstreamHost(incident, sig) {
+  const ids = Array.isArray(sig.evidence) ? sig.evidence : [];
+  const texts = ((incident && incident.evidence) || []).filter((e) => ids.includes(e.id)).map((e) => String(e.summary || ""));
+  for (const text of texts) {
+    const m = text.match(UPSTREAM_URL_RE) || text.match(BARE_HOST_RE);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/** First defined value among the given field names (the diagnostics data names have changed between rounds). */
+function pick(d, ...names) {
+  for (const name of names) {
+    if (d && d[name] !== undefined && d[name] !== null) return d[name];
+  }
+  return undefined;
+}
+
+/** One plain sentence built from the signal's own names, ports, sizes and percentages. */
+function signalSentence(sig, incident) {
+  const d = sig.data || {};
+  switch (sig.kind) {
+    case "MISSING_ENV":
+      return d.variable && d.variable !== "UNKNOWN_ENV"
+        ? `متغیر ${d.variable} در تنظیمات سایت تعریف نشده است.`
+        : "یکی از متغیرهای لازم سایت در تنظیمات تعریف نشده است.";
+    case "PORT_MISMATCH":
+      return `سایت روی پورت ${faInt(pick(d, "listenPort", "listenedPort"))} گوش می‌دهد ولی لیارا ${faInt(pick(d, "expectedPort", "configuredPort"))} را صدا می‌زند.`;
+    case "MEMORY_PRESSURE":
+      return `حافظه‌ی سایت حدود ${faInt(pick(d, "pct", "p95Pct"))}٪ پر است: ${faInt(pick(d, "rssMB", "peakMB"))} از ${faInt(d.limitMB)} مگابایت.`;
+    case "OOM_KILLED": {
+      const limit = pick(d, "limitMB");
+      return limit ? `سایت به‌خاطر پر شدن حافظه متوقف شده است (سقف ${faInt(limit)} مگابایت).` : "سایت به‌خاطر پر شدن حافظه متوقف شده است.";
+    }
+    case "MEMORY_LEAK_TREND":
+      return `حافظه‌ی سایت هر دقیقه حدود ${faDec(d.slopeMBPerMin, 1)} مگابایت بالا می‌رود (${faInt(d.growthPct)}٪ رشد).`;
+    case "CPU_SATURATION":
+      return `پردازنده‌ی سایت حدود ${faInt(pick(d, "p95Pct", "pct"))}٪ مشغول است.`;
+    case "CRASH_LOOP":
+      return `سایت پشت‌سرهم خاموش و دوباره روشن می‌شود (${faInt(d.restarts)} بار).`;
+    case "DEPLOY_REGRESSION":
+      return `خطاها ${faInt(d.minutesAfterRelease)} دقیقه بعد از انتشار نسخه‌ی تازه شروع شده‌اند.`;
+    case "DB_UNREACHABLE":
+    case "CACHE_UNREACHABLE": {
+      const what = sig.kind === "DB_UNREACHABLE" ? "پایگاه داده" : "سرویس کش";
+      const where = d.host ? ` ${d.host}${d.port ? `:${faInt(d.port)}` : ""}` : "";
+      return `سایت به ${what}${where} وصل نمی‌شود.`;
+    }
+    case "DB_POOL_EXHAUSTED":
+      return `اتصال‌های پایگاه داده‌ی سایت تمام شده است (${faInt(d.lines)} خطا).`;
+    case "DISK_FULL":
+      return `فضای دیسک سایت ${faInt(d.usedPct)}٪ پر است.`;
+    case "UPSTREAM_SLOW": {
+      const host = d.host || upstreamHost(incident, sig);
+      return host ? `سایت منتظر ${host} می‌ماند و جواب دیر می‌آید.` : "سایت منتظر یک سرویس بیرونی می‌ماند و جواب دیر می‌آید.";
+    }
+    case "APP_EXCEPTION":
+      return `در کد سایت هر بار خطای ${d.errorType || "ناشناخته"} رخ می‌دهد (${faInt(d.count)} بار).`;
+    case "APP_STOPPED":
+      return "سایت الان روشن نیست.";
+    default:
+      return sig.detail_fa || "";
+  }
+}
+
+/** One plain sentence for what the first approved remediation will do. */
+function solutionText(approval) {
+  const p = approval.params || {};
+  switch (approval.tool) {
+    case "app_update_envs": {
+      const keys = (Array.isArray(p.variables) ? p.variables : []).map((v) => v.key).filter(Boolean);
+      return keys.length ? `مقدار ${keys.join("، ")} را در تنظیمات سایت می‌گذارم و سایت را دوباره راه می‌اندازم.` : "";
+    }
+    case "app_update_port":
+      return `پورت سایت را به ${faInt(p.port)} تغییر می‌دهم تا لیارا همان پورتی را صدا بزند که برنامه روی آن گوش می‌دهد.`;
+    case "app_restart": return "سایت را یک بار دوباره راه می‌اندازم.";
+    case "app_scale": return "سایت را با یک نمونه دوباره روشن می‌کنم.";
+    case "release_rollback": return "به نسخه‌ی قبلی که درست کار می‌کرد برمی‌گردم.";
+    case "app_resize_plan": {
+      const rung = PLAN_LADDER.find((r) => r.planID === p.planID);
+      return rung ? `پلن سایت را به نسخه‌ی ${faInt(rung.ramMB)} مگابایتی تغییر می‌دهم.` : "پلن سایت را به نسخه‌ی بزرگ‌تر تغییر می‌دهم.";
+    }
+    default: return "";
+  }
+}
+
+/** Three plain bullets for a confirm card that has none: what changes, downtime, cost. */
+function actionBullets(approval, card) {
+  const p = approval.params || {};
+  const app = p.project || "";
+  const cost = card.cost_fa || "";
+  const costLine = !cost || /بدون/.test(cost) ? "هزینه‌ی تازه‌ای ندارد." : `هزینه: ${cost}.`;
+  let what = card.what_fa || card.title_fa || "";
+  switch (approval.tool) {
+    case "app_update_envs": {
+      const keys = (Array.isArray(p.variables) ? p.variables : []).map((v) => v.key).filter(Boolean).join("، ");
+      if (keys) what = `مقدار ${keys} در تنظیمات سایت ${app} ذخیره می‌شود.`;
+      break;
+    }
+    case "app_restart": what = `سایت ${app} دوباره راه‌اندازی می‌شود.`; break;
+    case "app_update_port": what = `پورت سایت به ${faInt(p.port)} تغییر می‌کند.`; break;
+    case "app_scale": what = `سایت ${app} با یک نمونه روشن می‌شود.`; break;
+    case "release_rollback": what = "سایت به نسخه‌ی قبلی برمی‌گردد."; break;
+    case "app_resize_plan": what = "پلن سایت عوض می‌شود."; break;
+    default: break;
+  }
+  return [what, DOWNTIME_FA, costLine].filter(Boolean);
+}
+
+const IR_HEAD = [
   "وارد سایت ایرنیک (nic.ir) شوید و با حساب خود وارد شوید.",
   "دامنه‌ی خود را باز کنید و گزینه‌ی «تغییر سرورهای نام» (NS) را بزنید.",
-  null, // NS 1 (filled from the zone)
-  null, // NS 2
-  "تغییرات را ذخیره کنید. انتشار تغییر چند دقیقه تا چند ساعت طول می‌کشد؛ بعد «انجام دادم، بررسی کن» را بزنید.",
 ];
-const GENERIC_STEPS = [
+const GENERIC_HEAD = [
   "وارد پنل مدیریت دامنه (ثبت‌کننده‌ی دامنه) شوید.",
   "بخش سرورهای نام (NS) دامنه را پیدا کنید.",
-  null,
-  null,
-  "تغییرات را ذخیره کنید؛ انتشار آن چند دقیقه تا چند ساعت طول می‌کشد. بعد «انجام دادم، بررسی کن» را بزنید.",
 ];
+const NS_SAVE = "تغییرات را ذخیره کنید؛ انتشار آن چند دقیقه تا چند ساعت طول می‌کشد. بعد «انجام دادم، بررسی کن» را بزنید.";
+const NS_NOTE = "بعد از ساخت ناحیه، سرورهای نام اینجا نمایش داده می‌شوند.";
+// Simulated mode only: realistic examples, always labelled «نمونه» in the steps.
+const EXAMPLE_NS = ["ns1.liara.ir", "ns2.liara.ir"];
 
 // ---------- small helpers ----------
 
@@ -245,7 +368,13 @@ async function buildProject(core, dir) {
     appName: sanitizeAppName(readPkgName(dir) || path.basename(dir)),
     keys,
     dotEnvKeys: new Set(dotEnv.keys()),
+    sokanRepo: isSokanRepo(dir),
   };
+}
+
+/** The Sokan monorepo itself: deploying it would publish the console, so the demo site is suggested instead. */
+function isSokanRepo(dir) {
+  return fs.existsSync(path.join(dir, "packages", "cli")) && fs.existsSync(path.join(dir, "apps", "web"));
 }
 
 function hasValue(core, key) {
@@ -261,6 +390,8 @@ function projectView(core, project) {
     port: project.port,
     summary_fa: project.summary_fa,
     appName: project.appName,
+    isSokanRepo: !!project.sokanRepo,
+    ...(project.sokanRepo ? { suggestDir: DEMO_DIR } : {}),
     envs: project.keys.map((key) => ({
       key,
       secret: SECRET_PARAM_KEY.test(key),
@@ -501,11 +632,14 @@ function siteAppName(s) {
 }
 
 function confirmView(core, approval) {
+  const card = approval.card || {};
+  const own = Array.isArray(card.bullets_fa) ? card.bullets_fa.filter((b) => typeof b === "string" && b.length > 0) : [];
   return {
     approvalId: approval.id,
-    title_fa: approval.card.title_fa,
-    bullets_fa: Array.isArray(approval.card.bullets_fa) ? approval.card.bullets_fa : [],
-    cost_fa: approval.card.cost_fa,
+    title_fa: card.title_fa,
+    // Every confirm names what changes, the downtime and the cost (2 to 3 bullets).
+    bullets_fa: (own.length >= 2 ? own : actionBullets(approval, card)).slice(0, 3),
+    cost_fa: card.cost_fa,
     risk: approval.riskLevel,
     expiresAt: approval.expiresAt,
     mode: core.mode(),
@@ -910,31 +1044,67 @@ async function runJob(core, id, jobId) {
 
 // ---------- site ----------
 
+/** One fresh GET: code null when the site did not answer at all. */
+async function probeOnce(url) {
+  const t0 = Date.now();
+  try {
+    const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    await res.arrayBuffer().catch(() => undefined);
+    return { url, code: res.status, ms: Date.now() - t0 };
+  } catch {
+    return { url, code: null, ms: Date.now() - t0 };
+  }
+}
+
+/**
+ * Verdict from fresh probes and (live) the applets: unreachable or 5xx is down; no running applet is down;
+ * a slow answer or a partly running app is degraded.
+ */
+function judgeSite(probes, baseUrl, applets) {
+  const where = (url) => url.slice(baseUrl.length) || "/";
+  const broken = probes.find((p) => p.code === null || p.code >= 500);
+  if (broken) {
+    return {
+      status: "down",
+      note_fa: broken.code === null ? "سایت جواب نمی‌دهد." : `صفحه‌ی ${where(broken.url)} خطای ${faNum(broken.code)} می‌دهد.`,
+    };
+  }
+  const list = applets && applets.ok ? (Array.isArray(applets.data) ? applets.data : applets.data?.applets || []) : [];
+  if (list.length > 0) {
+    const running = list.filter((a) => String(a.state).toLowerCase() === "running").length;
+    if (running === 0) return { status: "down", note_fa: "اپ در لیارا روشن نیست." };
+    if (running < list.length) return { status: "degraded", note_fa: "بعضی از نمونه‌های سایت خاموش‌اند یا دوباره راه می‌افتند." };
+  }
+  const slow = probes.find((p) => p.ms > SLOW_MS);
+  if (slow) return { status: "degraded", note_fa: `جواب سایت ${faDec(slow.ms / 1000, 1)} ثانیه طول کشید.` };
+  return { status: "up" };
+}
+
 async function probeSiteStatus(core, site) {
   const s = state(core);
   const cached = s.statusCache.get(site.url);
-  if (cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.status;
-  let status = "down";
-  if (!core.liara.isLive) {
-    const http = await probeUrl(`${site.url}/health`);
-    status = http.up ? "up" : "down";
-  } else {
-    const [http, applets] = await Promise.all([probeUrl(site.url), core.liara.getApplets(site.appName)]);
-    const list = applets.ok ? (Array.isArray(applets.data) ? applets.data : applets.data?.applets || []) : null;
-    const running = list ? list.some((a) => String(a.state).toLowerCase() === "running") : null;
-    if (http.up && running !== false) status = "up";
-    else if (http.up || running === true) status = "degraded";
-    else status = "down";
-  }
-  s.statusCache.set(site.url, { at: Date.now(), status });
-  return status;
+  if (cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.value;
+  const live = core.liara.isLive;
+  // Simulated: /health is only liveness, so the app's known failing paths (last incident, /api/items) are checked too.
+  const urls = live
+    ? [site.url]
+    : unique(["/health", ...(core.state.watchPaths || []), "/api/items"]).map((p) => `${site.url}${p}`);
+  const [probes, applets] = await Promise.all([
+    Promise.all(urls.map((url) => probeOnce(url))),
+    live ? core.liara.getApplets(site.appName).catch(() => null) : Promise.resolve(null),
+  ]);
+  const value = judgeSite(probes, site.url, applets);
+  s.statusCache.set(site.url, { at: Date.now(), value });
+  return value;
 }
 
 async function siteView(core, site) {
+  const verdict = await probeSiteStatus(core, site);
   return {
     appName: site.appName,
     url: site.url,
-    status: await probeSiteStatus(core, site),
+    status: verdict.status,
+    ...(verdict.note_fa ? { statusNote_fa: verdict.note_fa } : {}),
     ...(site.lastDeployAt ? { lastDeployAt: site.lastDeployAt } : {}),
     ...(site.monthlyTomans !== undefined ? { monthlyTomans: site.monthlyTomans } : {}),
     ...(site.planID ? { planID: site.planID } : {}),
@@ -977,14 +1147,21 @@ async function diagnose(core, body) {
     });
   }
   const key = top.id.replace(/^hyp_/, "");
-  const [problem_fa, plain] = PLAIN[key] || [top.title_fa, top.remediations[0]?.label_fa || ""];
-  const needs = (data.needs_values || []).flatMap((n) => n.keys || []);
-  const solution_fa = needs.length > 0
-    ? `برای این کار مقدار ${needs.join("، ")} لازم است؛ آن را در فرم متغیرها وارد کنید.`
-    : plain;
+  // The hypothesis' strongest signal (engine's primarySignal when present), else the first signal of its kinds.
+  const sig = signalOf(incident, KEY_KINDS[key] || []);
+  const full = ((incident && incident.hypotheses) || []).find((x) => x.id === top.id);
+  const primary = full && full.primarySignal;
+  const strongest = primary && primary.kind
+    ? { kind: primary.kind, data: primary.data || {}, evidence: sig ? sig.evidence : [] }
+    : sig;
+  const problem_fa = (strongest && signalSentence(strongest, incident)) || top.title_fa;
   // One card at a time: the first executable remediation is offered; the rest are withdrawn.
   for (const id of created.slice(1)) core.approvals.cancel(id);
   const first = created[0] ? core.approvals.get(created[0]) : undefined;
+  const needs = (data.needs_values || []).flatMap((n) => n.keys || []);
+  const solution_fa = needs.length > 0
+    ? `برای این کار مقدار ${needs.join("، ")} لازم است؛ آن را در فرم متغیرها وارد کنید.`
+    : (first && solutionText(first)) || top.remediations[0]?.label_fa || "";
   const confirm = first && first.status === "pending" ? confirmView(core, first) : undefined;
   return good({
     found: true,
@@ -1017,18 +1194,15 @@ async function fetchNameservers(core, domain) {
   return r.ok ? zoneNameservers(r.data) : [];
 }
 
-function domainSteps(isIr, nameservers) {
-  const base = isIr ? IR_STEPS : GENERIC_STEPS;
-  return base.map((text, i) => {
-    const n = i + 1;
-    if (i === 2 || i === 3) {
-      const ns = nameservers[i - 2];
-      return ns
-        ? { n, text_fa: `سرور نام ${i === 2 ? "اول" : "دوم"} را وارد کنید:`, copy: ns }
-        : { n, text_fa: "سرورهای نام بعد از تأیید اتصال دامنه در همین بخش نمایش داده می‌شوند." };
-    }
-    return { n, text_fa: text };
+/** Guide steps. NS lines and the save step appear only when nameservers exist (never duplicated placeholders). */
+function domainSteps(isIr, nameservers, example = false) {
+  const steps = (isIr ? IR_HEAD : GENERIC_HEAD).map((text_fa, i) => ({ n: i + 1, text_fa }));
+  if (!Array.isArray(nameservers) || nameservers.length === 0) return steps;
+  nameservers.forEach((ns, i) => {
+    steps.push({ n: steps.length + 1, text_fa: `سرور نام ${faNum(i + 1)} را وارد کنید${example ? " (نمونه)" : ""}:`, copy: ns });
   });
+  steps.push({ n: steps.length + 1, text_fa: NS_SAVE });
+  return steps;
 }
 
 async function domainInfo(core, body) {
@@ -1062,11 +1236,14 @@ async function domainInfo(core, body) {
       return fromLiara(core, 502, z.error, "خواندن دامنه از لیارا انجام نشد");
     }
   }
+  // Simulated: the NS values are realistic examples, marked as such in the steps and in the response.
   return good({
     isIr,
     domain,
-    steps: domainSteps(isIr, nameservers),
+    steps: live ? domainSteps(isIr, nameservers) : domainSteps(isIr, EXAMPLE_NS, true),
     nameservers,
+    ...(live && nameservers.length === 0 ? { nsNote_fa: NS_NOTE } : {}),
+    ...(live ? {} : { exampleNameservers: true }),
     ...(confirm ? { confirm } : {}),
     ...(live ? {} : { note_fa: "اتصال واقعی دامنه فقط با حساب لیارا انجام می‌شود؛ این مراحل راهنما هستند." }),
   });
@@ -1195,5 +1372,5 @@ module.exports = {
   resolveProjectDir,
   planOptions,
   // exported for tests and the server only
-  _internal: { PLAIN, domainSteps, probeSiteStatus },
+  _internal: { KEY_KINDS, domainSteps, judgeSite, signalSentence, solutionText, actionBullets },
 };

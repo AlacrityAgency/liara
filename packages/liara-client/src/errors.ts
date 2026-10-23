@@ -5,9 +5,9 @@ export function mapHttpError(status: number, message?: string, context?: Record<
     case 401:
       return {
         code: "UNAUTHORIZED",
-        what_fa: "عدم امکان احراز هویت با لیارا",
-        why_fa: "توکن دسترسی API واردشده منقضی شده یا اشتباه است.",
-        next_fa: "از کنسول لیارا (بخش حساب کاربری > دسترسی API) یک توکن معتبر دریافت کرده و وارد کنید.",
+        what_fa: "این کلید درست نیست یا منقضی شده.",
+        why_fa: "لیارا این کلید را برای حساب شما قبول نکرد.",
+        next_fa: "یک کلید تازه از console.liara.ir/API بساز و دوباره بچسبان.",
       };
     case 402:
       return {
@@ -89,9 +89,9 @@ export function timeoutError(timeoutMs: number): HumanError {
 export function networkError(message: string): HumanError {
   return {
     code: "NETWORK_ERROR",
-    what_fa: "عدم برقراری ارتباط با شبکه لیارا",
-    why_fa: `خطای شبکه: ${message}`,
-    next_fa: "وضعیت اتصال اینترنت و دسترسی به api.liara.ir را بررسی کنید.",
+    what_fa: "به لیارا دسترسی نداریم؛ اینترنت را بررسی کن و دوباره امتحان کن.",
+    why_fa: `اتصال به سرور لیارا برقرار نشد (${message}).`,
+    next_fa: "چند ثانیه صبر کن و دوباره «وصل شو» را بزن.",
   };
 }
 
