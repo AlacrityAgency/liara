@@ -261,6 +261,16 @@ describe("Sokan console server (WEB_CONTRACT)", () => {
 // ---------- simulated scenarios through a real console (scenario-3 leak, scenario-4 CPU) ----------
 // Each describe starts its own console and simulated target, so earlier scenarios cannot leak into these windows.
 
+async function pollUntil(fn, timeoutMs, stepMs = 300) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await fn();
+    if (value) return value;
+    await sleep(stepMs);
+  }
+  return null;
+}
+
 async function startConsole() {
   const sokanPort = await freePort();
   const chaosPort = await freePort();
@@ -279,18 +289,30 @@ async function startConsole() {
   child.on("exit", (code, signal) => {
     exitInfo = { code, signal };
   });
-  await new Promise((resolve, reject) => {
-    let out = "";
-    const timer = setTimeout(() => reject(new Error(`server did not start: ${out}`)), 15000);
-    child.stdout.on("data", (d) => {
-      out += d.toString();
-      if (out.includes("Sokan console:")) {
-        clearTimeout(timer);
-        resolve();
-      }
+  const stop = async () => {
+    if (exitInfo === null) {
+      child.kill("SIGTERM");
+      await pollUntil(() => exitInfo !== null, 8000, 100);
+    }
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  };
+  try {
+    await new Promise((resolve, reject) => {
+      let out = "";
+      const timer = setTimeout(() => reject(new Error(`server did not start: ${out}`)), 15000);
+      child.stdout.on("data", (d) => {
+        out += d.toString();
+        if (out.includes("Sokan console:")) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      child.stderr.on("data", (d) => { out += d.toString(); });
     });
-    child.stderr.on("data", (d) => { out += d.toString(); });
-  });
+  } catch (err) {
+    await stop();
+    throw err;
+  }
   const call = async (method, urlPath, body) => {
     const res = await fetch(`${base}${urlPath}`, {
       method,
@@ -306,15 +328,11 @@ async function startConsole() {
     }
     return { status: res.status, json };
   };
-  const healthy = await waitFor(async () => (await call("GET", "/api/state")).json?.probes?.some((p) => p.status === 200), 15000);
-  assert.ok(healthy, "simulated target is healthy");
-  const stop = async () => {
-    if (exitInfo === null) {
-      child.kill("SIGTERM");
-      await waitFor(() => exitInfo !== null, 8000, 100);
-    }
-    fs.rmSync(stateDir, { recursive: true, force: true });
-  };
+  const healthy = await pollUntil(async () => (await call("GET", "/api/state")).json?.probes?.some((p) => p.status === 200), 15000);
+  if (!healthy) {
+    await stop();
+    assert.fail("simulated target is healthy");
+  }
   return { call, stop };
 }
 
