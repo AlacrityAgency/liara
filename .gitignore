@@ -5,11 +5,13 @@ build/
 # Local tool state — not part of the project
 .superagent/
 .claude/
+.sokan/
 knowledge/notebooklm-state.json
 
 # Secrets and local auth profiles
 .env
 .env.*
+!.env.example
 storage_state.json
 master_token.json
 browser_profile/

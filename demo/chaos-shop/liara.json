@@ -1,0 +1,5 @@
+{
+    "platform": "node",
+    "app": "chaos-shop",
+    "port": 3100
+}

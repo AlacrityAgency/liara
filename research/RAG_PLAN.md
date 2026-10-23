@@ -26,8 +26,8 @@ Heading numbers and titles below match the supplied white paper. Overlap is inte
 | Lane | Exclusive ownership | Inputs | Output and merge gate |
 |---|---|---|---|
 | Source capture | `knowledge/sources/`, `knowledge/source-registry.json` | White-paper references, public official repositories | Exact source URL, retrieval timestamp, hash and reference status; successfully fetched content is inspectable locally |
-| Preparation and NotebookLM tooling | `scripts/`; generated `knowledge/sections/` | White paper, source registry, installed CLI help | Deterministic section bundles, manifest, explicit-notebook sync with recorded IDs and resumable state; unknown mutation outcomes require reconciliation |
-| Structure and evaluation | `docs/RAG_PLAN.md`, `docs/RAG_EVALUATION.json` | Full white paper | All six sections mapped; bilingual answer/abstention checks with expected evidence |
+| Preparation and NotebookLM tooling | `research/notebooklm_rag.py`; generated `knowledge/sections/` | White paper, source registry, installed CLI help | Deterministic section bundles, manifest, explicit-notebook sync with recorded IDs and resumable state; unknown mutation outcomes require reconciliation |
+| Structure and evaluation | `research/RAG_PLAN.md`, `research/RAG_EVALUATION.json` | Full white paper | All six sections mapped; bilingual answer/abstention checks with expected evidence |
 | Integration owner | Workspace-level usage guide, final verification | Outputs from the three lanes | Authentication confirmed, intended notebook identified, every required source ready, cited questions checked and remaining failures reported |
 
 Sources and tooling can proceed independently. Sync begins only after the source registry and prepared bundles are validated. Remote changes target a dedicated notebook by explicit ID. Credentials and browser state stay outside the project corpus.

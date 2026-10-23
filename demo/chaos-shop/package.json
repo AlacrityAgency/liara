@@ -4,6 +4,9 @@
   "private": true,
   "description": "Demo target app for Sokan with env-controlled failure modes (WHITEPAPER §15.3). Zero dependencies.",
   "main": "src/server.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node src/server.js"
   }
