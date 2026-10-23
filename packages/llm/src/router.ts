@@ -85,7 +85,7 @@ export class IntentRouter {
     if (/محدودیت|نمیتونی|نمی تونی|نمیتوانی|چه کارهایی/.test(t)) return match("limits_list");
 
     // Symptoms go to SRE investigation before any action keyword ("حذف کش ... سایت هنوز کنده").
-    if (/کند|ارور|خطا|کمک نکرد|هنوز|لاگ|مصرف|سی ?پی ?یو|سیپیو|cpu|چرا|500/.test(t)) {
+    if (/کند|ارور|خطا|کمک نکرد|هنوز|لاگ|مصرف|سی ?پی ?یو|سیپیو|cpu|چرا|500|باز ?نمی ?شه|کار ?نمی ?کنه|بالا ?نمی ?[آا]?ی?اد|قطع|down|اشتباهه/.test(t)) {
       let focus = "general";
       if (/لاگ/.test(t)) focus = "logs";
       else if (/cpu|سی ?پی ?یو|سیپیو|پردازنده/.test(t)) focus = "cpu";

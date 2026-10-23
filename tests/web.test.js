@@ -353,6 +353,7 @@ describe("Simulated scenario-3: memory leak until OOM", { timeout: 90000 }, () =
     assert.ok(state.json.events.some((e) => e.type === "crash" && /OOMKilled/.test(e.message)), "OOMKilled exit recorded");
     assert.ok(state.json.logs.some((l) => /OOMKilled/.test(l.line)), "OOM line in the logs");
     assert.ok(state.json.app.restarts >= 1, "restart counted");
+    assert.strictEqual(state.json.app.memoryLimitMB, 120, "memory percentage is measured against CHAOS_MEM_LIMIT_MB");
   });
 
   it("chat diagnoses oom_leak on top, with an app_restart card and undersized_plan contradicted", { timeout: 60000 }, async () => {
@@ -407,7 +408,7 @@ describe("Simulated scenario-4: sustained CPU load on /api/products", { timeout:
 
 describe("ChaosRuntime process generations", () => {
   const { ChaosRuntime } = require("../apps/web/lib/runtime.js");
-  const T = (s) => new Date(Date.UTC(2026, 9, 23, 10, 0, s)).toISOString();
+  const T = (s) => new Date(Date.UTC(2026, 9, 23, 10, 0, 0) + s * 1000).toISOString();
 
   it("maps a timestamp to the process that was alive then, and resetHistory keeps only the running one", () => {
     const rt = new ChaosRuntime({ onLine() {}, onEvent() {} });
