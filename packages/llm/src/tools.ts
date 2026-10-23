@@ -180,7 +180,10 @@ export const TOOL_SPECS: ToolSpec[] = [
     description_fa: "راهنمای گام‌به‌گام اتصال دامنه (ثبت DNS و ایرنیک)",
     parameters: {
       type: "object",
-      properties: { domain: { type: "string", description: "دامنه (اختیاری)" } },
+      properties: {
+        domain: { type: "string", description: "دامنه (اختیاری)" },
+        tld: { type: "string", description: "پسوند دامنه مثل ir، وقتی نام کامل دامنه معلوم نیست (اختیاری)" },
+      },
       required: [],
     },
   },

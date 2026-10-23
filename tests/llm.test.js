@@ -12,6 +12,10 @@ const {
   SYSTEM_PROMPT_FA,
   validateToolArgs,
   findTool,
+  faNumber,
+  faToman,
+  withSimulatedNote,
+  renderToolReply,
 } = require("../build/llm/src/index.js");
 
 // ---- helpers (no real network: every LLM call goes through a fake fetch) ----
@@ -327,7 +331,7 @@ describe("Orchestrator", () => {
     const orch = new Orchestrator(UNCONFIGURED());
     const out = await orch.handle("ریستارت کن", CTX_LIVE(async () => { executions++; return {}; }));
     assert.strictEqual(executions, 0);
-    assert.ok(out.reply_fa.includes("app"));
+    assert.ok(out.reply_fa.includes("SOKAN_APP"), "tells the operator which setting names the app");
   });
 
   it("falls back to the offline router when the LLM provider fails", async () => {
@@ -337,5 +341,117 @@ describe("Orchestrator", () => {
     const out = await orch.handle("سایت بالاست؟", CTX_LIVE(async (name) => { executed.push(name); return { status: "running" }; }));
     assert.strictEqual(out.source, "offline");
     assert.deepStrictEqual(executed, ["app_status"]);
+  });
+});
+
+// ---- 6. Offline replies: app defaults, clarify options and deterministic formatters ----
+
+const OFFLINE_CTX = (executeTool, extra = {}) => ({ mode: "simulated", executeTool, ...extra });
+
+describe("Offline replies", () => {
+  it("fills the single known app into an L2 restart and returns the approval card", async () => {
+    const seen = [];
+    const orch = new Orchestrator(UNCONFIGURED());
+    const out = await orch.handle("ریستارت کن", OFFLINE_CTX(async (name, args) => {
+      seen.push({ name, args });
+      return { status: "approval_required", approvalId: "apr_1", risk: "L2", title_fa: "ری‌استارت اپ", what_fa: "ری‌استارت اپ chaos-shop" };
+    }, { defaultApp: "chaos-shop", apps: ["chaos-shop"] }));
+    assert.deepStrictEqual(seen, [{ name: "app_restart", args: { app: "chaos-shop" } }]);
+    assert.strictEqual(out.approvals.length, 1);
+    assert.ok(out.reply_fa.includes("apr_1"));
+    assert.ok(!out.reply_fa.includes("اطلاعات بیشتری"));
+  });
+
+  it("asks which app when several are manageable, with one button per app", async () => {
+    let executions = 0;
+    const orch = new Orchestrator(UNCONFIGURED());
+    const out = await orch.handle("اپ رو حذف کن", OFFLINE_CTX(async () => { executions++; return {}; }, { apps: ["shop", "blog"] }));
+    assert.strictEqual(executions, 0);
+    assert.deepStrictEqual(out.clarify.options.map((o) => o.label_fa), ["shop", "blog"]);
+    assert.strictEqual(out.clarify.options[0].message, "اپ رو حذف کن shop");
+  });
+
+  it("routes a button message that names the app to that app", async () => {
+    const seen = [];
+    const orch = new Orchestrator(UNCONFIGURED());
+    await orch.handle("ریستارت کن blog", OFFLINE_CTX(async (name, args) => {
+      seen.push(args);
+      return { status: "approval_required", approvalId: "apr_2" };
+    }, { apps: ["shop", "blog"] }));
+    assert.deepStrictEqual(seen, [{ app: "blog" }]);
+  });
+
+  it("never shows the «model not active» sentence in normal offline replies", async () => {
+    const orch = new Orchestrator(UNCONFIGURED());
+    const out = await orch.handle("وضعیت سایتم چطوره", OFFLINE_CTX(async () => ({
+      status: "ok",
+      data: { app: { name: "chaos-shop", status: "running", planID: "g2-small", port: 3100 }, last_probe: null, recent_probes: [] },
+    })));
+    assert.ok(!out.reply_fa.includes("مدل زبانی"));
+    assert.ok(out.reply_fa.includes("chaos-shop"));
+    assert.ok(out.reply_fa.includes("روشن"));
+  });
+
+  it("renders the greeting with five help options", async () => {
+    const orch = new Orchestrator(UNCONFIGURED());
+    const out = await orch.handle("سلام", OFFLINE_CTX(async () => ({})));
+    assert.strictEqual(out.clarify.options.length, 5);
+  });
+
+  it("falls back to the rendered result when the LLM fails after a tool already ran", async () => {
+    const llm = fakeLlm([
+      { body: completion({ toolCalls: [toolCall("c1", "limits_list", {})] }) },
+      { status: 503, body: { error: "down" } },
+    ]);
+    const orch = new Orchestrator(new LlmClient({ apiKey: "k", fetchImpl: llm.fetchImpl }));
+    const out = await orch.handle("چه کارهایی نمی‌تونی بکنی", CTX_LIVE(async () => ({
+      status: "ok",
+      data: { limits: [{ what_fa: "شارژ حساب", why_fa: "پرداخت دستی است", workaround_fa: "لینک کنسول" }] },
+    })));
+    assert.strictEqual(out.source, "offline");
+    assert.ok(out.reply_fa.includes("۱. شارژ حساب"));
+    assert.ok(out.reply_fa.includes("راه‌حل: لینک کنسول"));
+  });
+
+  it("sends the model the formatted summary next to the raw result", async () => {
+    const llm = fakeLlm([
+      { body: completion({ toolCalls: [toolCall("c1", "limits_list", {})] }) },
+      { body: completion({ content: "ok" }) },
+    ]);
+    const orch = new Orchestrator(new LlmClient({ apiKey: "k", fetchImpl: llm.fetchImpl }));
+    await orch.handle("محدودیت‌ها", CTX_LIVE(async () => ({
+      status: "ok",
+      data: { limits: [{ what_fa: "شارژ حساب", why_fa: "دستی", workaround_fa: "کنسول" }] },
+    })));
+    const toolMsg = llm.calls[1].body.messages.find((m) => m.role === "tool");
+    assert.ok(toolMsg.content.includes("summary_fa"));
+    assert.ok(toolMsg.content.startsWith('<data source="tool:limits_list" trust="untrusted">'));
+    assert.ok(!toolMsg.content.includes("\n"), "compact JSON, no pretty printing");
+  });
+
+  it("router: an app named in the text fills the app argument only when it is a known app", () => {
+    assert.deepStrictEqual(IntentRouter.route("ریستارت کن blog", { apps: ["shop", "blog"] }).args, { app: "blog" });
+    assert.deepStrictEqual(IntentRouter.route("ریستارت کن", { apps: ["shop", "blog"] }).args, {});
+    assert.deepStrictEqual(IntentRouter.route("دامنه ir وصل کن").args, { tld: "ir" });
+  });
+});
+
+describe("Persian formatters", () => {
+  it("formats numbers with Persian digits and separators", () => {
+    assert.strictEqual(faNumber(72000), "۷۲٬۰۰۰");
+    assert.strictEqual(faNumber(3.5, 1), "۳٫۵");
+    assert.strictEqual(faToman(158400), "۱۵۸٬۴۰۰ تومان");
+  });
+
+  it("adds the simulated note once", () => {
+    const once = withSimulatedNote("متن", "simulated");
+    assert.strictEqual(withSimulatedNote(once, "simulated"), once);
+    assert.strictEqual(withSimulatedNote("متن", "live"), "متن");
+  });
+
+  it("renders errors with their next step", () => {
+    const text = renderToolReply("app_restart", { status: "error", error: "MISSING_VALUES", keys: ["DATABASE_URL"], next_fa: "فرم را پر کنید." });
+    assert.ok(text.includes("DATABASE_URL"));
+    assert.ok(text.includes("فرم را پر کنید."));
   });
 });

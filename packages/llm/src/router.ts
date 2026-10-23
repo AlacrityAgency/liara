@@ -1,5 +1,6 @@
 // Offline fallback router (used when no LLM is configured or the LLM call fails).
 // Rules are ordered: the first match wins. No \b anchors: \b does not work on Persian text.
+import { findTool } from "./tools";
 
 export interface RouteMatch {
   tool: string;
@@ -37,7 +38,12 @@ export function normalizeFa(input: string): string {
 const GREETING_FA =
   "سلام! من سُکان هستم، همکار DevOps برای اپ‌های لیارا. می‌توانم اپ را دیپلوی کنم، وضعیت و علت مشکل را بررسی کنم، پلن و هزینه را بگویم یا دامنه را وصل کنم. چه کاری می‌خواهی؟";
 
-const HELP_OPTIONS = ["دیپلوی پروژه", "وضعیت اپ", "هزینه‌ی ماهانه", "محدودیت‌ها"];
+const HELP_OPTIONS = ["دیپلوی پروژه", "بررسی خطا یا کندی", "وضعیت اپ", "هزینه‌ی ماهانه", "اتصال دامنه"];
+
+export interface RouteOptions {
+  /** Manageable app names. An app named in the text is filled into app-scoped tools. */
+  apps?: string[];
+}
 
 function hasWord(tokens: string[], words: string[]): boolean {
   return words.some((w) => tokens.includes(w));
@@ -49,8 +55,19 @@ function digitsIn(t: string): number | undefined {
 }
 
 export class IntentRouter {
-  static route(text: string): RouteResult {
+  static route(text: string, options: RouteOptions = {}): RouteResult {
     const raw = String(text ?? "");
+    const result = IntentRouter.routeText(raw);
+    if (isClarify(result)) return result;
+    const spec = findTool(result.tool);
+    const named = (options.apps ?? []).find((app) => normalizeFa(raw).split(" ").includes(normalizeFa(app)));
+    if (named && spec?.parameters.properties?.app && result.args.app === undefined) {
+      result.args = { ...result.args, app: named };
+    }
+    return result;
+  }
+
+  private static routeText(raw: string): RouteResult {
     const t = normalizeFa(raw);
     const tokens = t.split(" ");
     const match = (tool: string, args: Record<string, unknown> = {}, confidence = 0.9): RouteMatch => ({
@@ -83,7 +100,8 @@ export class IntentRouter {
 
     if (/دامنه|ایرنیک|domain|irnic/.test(t)) {
       const domain = tokens.find((w) => /^[a-z0-9-]+\.[a-z.]+$/.test(w));
-      return match("domain_connect_guide", domain ? { domain } : {});
+      if (domain) return match("domain_connect_guide", { domain });
+      return match("domain_connect_guide", hasWord(tokens, ["ir"]) ? { tld: "ir" } : {});
     }
 
     if (hasWord(tokens, ["پلن"]) && /کدوم|کدام|مناسب|پیشنهاد/.test(t)) return match("plans_recommend");
