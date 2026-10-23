@@ -143,7 +143,7 @@ describe("3. Immutable Audit Ledger Hash-Chaining (§7.4)", () => {
       success: true,
     });
 
-    assert.strictEqual(ledger.verify(), null, "Chain must be completely intact");
+    assert.deepStrictEqual(ledger.verify(), { ok: true }, "Chain must be completely intact");
   });
 
   it("detects tampering when an audit entry is altered", () => {
@@ -166,8 +166,8 @@ describe("3. Immutable Audit Ledger Hash-Chaining (§7.4)", () => {
     const records = [...ledger.list()];
     // Tamper with record 1
     const tampered = records.map((r, i) => (i === 0 ? { ...r, tool: "app_restart" } : r));
-    const brokenSeq = ledger.verify(tampered);
-    assert.strictEqual(brokenSeq, 1, "Must detect tamper on altered record seq 1");
+    const result = ledger.verify(tampered);
+    assert.deepStrictEqual(result, { ok: false, brokenAt: 1 }, "Must detect tamper on altered record seq 1");
   });
 });
 

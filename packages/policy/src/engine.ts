@@ -1,4 +1,5 @@
 import * as crypto from "crypto";
+import * as fs from "fs";
 import type { PolicyConfig, RiskLevel } from "@sokan/contracts";
 
 /**
@@ -47,9 +48,88 @@ export function paramsHash(tool: string, params: Record<string, unknown>): strin
   return crypto.createHash("sha256").update(`${tool}:${canonicalJson(params)}`).digest("hex");
 }
 
+/** WHITEPAPER §7.3: a standing approval never covers an action that changes cost. Enforced regardless of config. */
+export const COST_BEARING_TOOLS: readonly string[] = Object.freeze([
+  "app_create", "app_resize_plan", "db_resize", "app_scale",
+]);
+
+export const DEFAULT_POLICY_PATH = ".sokan/policy.json";
+
+/**
+ * Validates a plain config object (parsed JSON) into a PolicyConfig.
+ * Accepts `tool` (whitepaper §7.3 wording) or `action` for each rule. Throws on anything that could
+ * widen authority: L0/L1/L3 or cost-bearing tools as standing targets, or a missing trigger.
+ */
+export function normalizePolicyConfig(raw: unknown): PolicyConfig {
+  const fail = (msg: string): never => { throw new Error(`POLICY_INVALID: ${msg}`); };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail("root must be an object");
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj["app"] !== "string" || obj["app"].length === 0) fail("app must be a non-empty string");
+
+  const never = obj["never"];
+  if (never !== undefined && (!Array.isArray(never) || never.some((x) => typeof x !== "string"))) {
+    fail("never must be an array of tool names");
+  }
+
+  const rulesRaw = obj["standingApprovals"];
+  let standingApprovals: PolicyConfig["standingApprovals"];
+  if (rulesRaw !== undefined) {
+    if (!Array.isArray(rulesRaw)) fail("standingApprovals must be an array");
+    standingApprovals = (rulesRaw as unknown[]).map((rule, i) => {
+      if (!rule || typeof rule !== "object") fail(`standingApprovals[${i}] must be an object`);
+      const r = rule as Record<string, unknown>;
+      const tool = r["tool"] ?? r["action"];
+      if (typeof tool !== "string" || tool.length === 0) fail(`standingApprovals[${i}].tool must be a string`);
+      const toolName = tool as string;
+      if (typeof r["when"] !== "string" || (r["when"] as string).length === 0) {
+        fail(`standingApprovals[${i}].when must name a system trigger`);
+      }
+      const risk = riskOf(toolName, {});
+      if (risk !== "L2") fail(`${toolName} is ${risk}; standing approvals are only for L2 actions`);
+      if (COST_BEARING_TOOLS.includes(toolName)) fail(`${toolName} is cost-bearing and cannot be a standing approval`);
+      const cap = (name: string): number | undefined => {
+        const v = r[name];
+        if (v === undefined) return undefined;
+        if (typeof v !== "number" || !Number.isInteger(v) || v < 1) fail(`standingApprovals[${i}].${name} must be a positive integer`);
+        return v as number;
+      };
+      const rule2: NonNullable<PolicyConfig["standingApprovals"]>[number] = {
+        action: toolName,
+        when: r["when"] as string,
+      };
+      const maxPerHour = cap("maxPerHour");
+      const maxPerDay = cap("maxPerDay");
+      if (maxPerHour !== undefined) rule2.maxPerHour = maxPerHour;
+      if (maxPerDay !== undefined) rule2.maxPerDay = maxPerDay;
+      return rule2;
+    });
+  }
+
+  return {
+    app: obj["app"] as string,
+    ...(standingApprovals ? { standingApprovals } : {}),
+    ...(never ? { never: [...(never as string[])] } : {}),
+  };
+}
+
+/**
+ * Reads a policy file (JSON; no YAML dependency). Returns undefined when the file does not exist,
+ * which means no standing approvals. Invalid content throws rather than being partly applied.
+ */
+export function loadPolicyConfig(filePath: string = DEFAULT_POLICY_PATH): PolicyConfig | undefined {
+  if (!fs.existsSync(filePath)) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (err) {
+    throw new Error(`POLICY_INVALID: ${filePath} is not valid JSON (${(err as Error).message})`);
+  }
+  return normalizePolicyConfig(raw);
+}
+
 /**
  * Standing approvals — §7.3. A rule applies only when:
- *  - the action is L2 (never L3, never cost changes listed in `never`),
+ *  - the action is L2 (never L3, never cost-bearing, never a tool listed in `never`),
  *  - a deterministic system trigger with exactly the rule's `when` id is asserted (the LLM cannot assert triggers),
  *  - the hourly / daily caps have not been reached.
  */
@@ -59,6 +139,7 @@ export class StandingApprovals {
 
   allows(tool: string, risk: RiskLevel, systemTriggers: readonly string[]): boolean {
     if (!this.config?.standingApprovals || risk !== "L2") return false;
+    if (COST_BEARING_TOOLS.includes(tool)) return false;
     if (this.config.never?.includes(tool)) return false;
     const rule = this.config.standingApprovals.find((r) => r.action === tool && systemTriggers.includes(r.when));
     if (!rule) return false;
