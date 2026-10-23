@@ -75,6 +75,7 @@ function createCore(options = {}) {
     cpuSamples: [],
     app: {
       port: chaosPort,
+      basePort: chaosPort,
       planID: PLAN_LADDER[0].planID,
       ramMB: PLAN_LADDER[0].ramMB,
       appEnvs: { ...SIM_DEFAULT_ENVS },
@@ -130,6 +131,7 @@ function createCore(options = {}) {
       ts: new Date().toISOString(),
       stream,
       line: redactor.redactText(String(line)),
+      gen: core.runtime ? core.runtime.starts : 0,   // process generation, used to ignore stale "listening" lines
     };
     core.logs.push(entry);
     if (core.logs.length > LOG_RING) core.logs.shift();
@@ -372,4 +374,4 @@ function releaseView(r) {
   };
 }
 
-module.exports = { createCore, TARGET_NAME, DEMO_DB_URL, SIM_DEFAULT_ENVS, PLAN_LADDER, DEMO_DIR, sleep, unique };
+module.exports = { createCore, TARGET_NAME, DEMO_DB_URL, SIM_DEFAULT_ENVS, PLAN_LADDER, DEMO_DIR, REPO_ROOT, sleep, unique };
