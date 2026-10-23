@@ -33,7 +33,8 @@ const NODE_FRAME = /^\s+at\s/;
 const NODE_LOC = /((?:[A-Za-z]:)?[^\s()]+?):(\d+):(\d+)\)?\s*$/;
 const PY_START = /^Traceback \(most recent call last\):/;
 const PY_FRAME = /^\s*File "([^"]+)", line (\d+)/;
-const PY_ERR = /^([A-Z][A-Za-z0-9_.]*(?:Error|Exception|Interrupt|Exit)):\s?(.*)$/;
+// Accepts dotted module paths: "django.db.utils.OperationalError", "psycopg2.OperationalError".
+const PY_ERR = /^((?:[a-z_][\w]*\.)*[A-Za-z_]\w*(?:Error|Exception|Interrupt|Exit)):\s?(.*)$/;
 const PHP_FATAL = /PHP (?:Fatal error|Warning|Parse error):\s+(?:Uncaught\s+)?([^\s:]+)?:?\s*(.*?) in (\S+?)(?::| on line )(\d+)/;
 const LARAVEL = /local\.ERROR:\s*(.*)/;
 const GO_PANIC = /^panic:\s*(.*)$/;

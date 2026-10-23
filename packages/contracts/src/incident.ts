@@ -33,6 +33,10 @@ export interface Signal {
   firstSeen: string;
   detail_fa: string;
   evidence: string[];   // EvidenceRef ids
+  /** 0..1, set by the extractor (WHITEPAPER §8.4): occurrence count, R², distance from threshold. */
+  strength?: number;
+  /** Numeric facts behind the signal (slope, R², p95, minutes to limit …). */
+  data?: Record<string, number | string | boolean | null>;
 }
 
 /** Text inside data that looks like an instruction (§7.2 point 4). Flagged, never obeyed. */
@@ -40,6 +44,19 @@ export interface InstructionFlag {
   evidenceId: string;
   excerpt: string;
 }
+
+/** Machine-checkable success criterion evaluated by the verifier (WHITEPAPER §8.6). */
+export type SuccessCriterion =
+  | { kind: "probe_ok"; path: string }
+  | { kind: "probe_latency_below"; path: string; ms: number }
+  | { kind: "no_error_signature"; signature: string }
+  | { kind: "error_rate_below"; perMin: number }
+  | { kind: "mem_below_pct"; pct: number }
+  | { kind: "cpu_below_pct"; pct: number }
+  | { kind: "disk_used_below"; pct: number }
+  | { kind: "applets_running" }
+  | { kind: "restarts_stable" }
+  | { kind: "release_ready" };
 
 export interface Remediation {
   id: string;
@@ -49,6 +66,10 @@ export interface Remediation {
   label_fa: string;
   note_fa?: string;
   successCriteria_fa: string;
+  cost_fa?: string;
+  impact_fa?: string;
+  rollback_fa?: string;
+  successCriteria?: SuccessCriterion;
 }
 
 export interface Hypothesis {
@@ -61,6 +82,12 @@ export interface Hypothesis {
   evidence_against: string[];
   confirming_test?: string;
   remediations: Remediation[];
+  /** Runbook id this hypothesis was produced from (e.g. "missing_env"). */
+  runbookId?: string;
+  /** Log-odds before the sigmoid (WHITEPAPER §8.4). */
+  logit?: number;
+  /** Collectors that failed and that this hypothesis depends on; confidence is capped at medium. */
+  missingEvidence?: string[];
 }
 
 export interface ActionRecord {
