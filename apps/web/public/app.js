@@ -367,7 +367,7 @@
     }
     renderResults();
     renderTray();
-    if (S.openApprovalId && S.openApprovalId === d.approvalId) renderSheet();
+    if (S.openApprovalId && S.openApprovalId === d.approvalId) closeSheet();
     addMsg('bot', [resultCard(d)]);
     const ok = d.ok && !(d.verification && !d.verification.passed);
     if (ok) {
@@ -437,6 +437,7 @@
           : el('div', { class: 'muted' }, 'انقضا: ', el('span', { class: 'clock', 'data-until': a.expiresAt, 'data-done': 'منقضی شد' })),
         el('button', { type: 'button', class: 'btn primary small', onclick: () => openApproval(a.id), text: 'بررسی کارت' })));
     });
+    tick();
   }
   function openApproval(id) {
     S.openApprovalId = id;
@@ -509,6 +510,7 @@
       foot.push(el('button', { type: 'button', class: 'btn ghost big', onclick: closeSheet, text: 'بستن' }));
     }
     $('#sheetFoot').replaceChildren(...foot);
+    tick();
   }
   async function approve(id) {
     const a = S.approvals.get(id);
@@ -523,9 +525,10 @@
       if (isL3 && !next.executableAfter) next.executableAfter = new Date(Date.now() + 10000).toISOString();
       upsertApproval(next);
       delete S.typed[id];
-      toast({ kind: 'ok', title: 'تأیید ثبت شد', lines: [['وضعیت', isL3 ? 'اجرا ۱۰ ثانیه دیگر آغاز می‌شود؛ تا آن زمان می‌توانید لغو کنید.' : 'اجرا شروع شد؛ نتیجه را همین‌جا می‌بینید.']] });
+      toast({ kind: 'ok', title: 'تأیید ثبت شد', lines: [['وضعیت', isL3 ? 'اجرا ۱۰ ثانیه دیگر آغاز می‌شود؛ تا آن زمان می‌توانید لغو کنید.' : 'اجرا شروع شد؛ نتیجه را در گفتگو و تب وضعیت می‌بینید.']] });
       renderTray();
-      renderSheet();
+      if (isL3) renderSheet();
+      else closeSheet();
     } catch (e) {
       if (e.status === 401) return;
       toastError(e, 'تأیید کارت');

@@ -456,7 +456,7 @@ details.tech summary { cursor: pointer; font-weight: 700; color: var(--muted); }
   max-width: 480px; margin-inline: auto;
 }
 .toast {
-  pointer-events: auto; padding: 12px 14px; border-radius: 12px; box-shadow: var(--shadow);
+  pointer-events: none; padding: 12px 14px; border-radius: 12px; box-shadow: var(--shadow);
   background: var(--card); border: 1px solid var(--border); font-size: 14px; line-height: 1.7;
   display: flex; flex-direction: column; gap: 4px; min-width: 0;
 }
