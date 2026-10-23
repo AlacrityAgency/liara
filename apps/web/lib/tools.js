@@ -5,11 +5,13 @@
 const fs = require("fs");
 const path = require("path");
 const { findTool, validateToolArgs, effectiveRisk } = require("../../../build/llm/src/index.js");
+const { MCP_TOOL_SPECS } = require("../../../build/mcp/src/index.js");
 const { ProjectAnalyzer } = require("../../../build/analyzer/src/index.js");
 const { LIARA_LIMITS } = require("../../../build/liara-client/src/index.js");
 const { investigate, addApproval } = require("./investigate");
 const { livePlans } = require("./evidence");
 const { DEMO_DIR, REPO_ROOT, PLAN_LADDER, SIM_DEFAULT_ENVS } = require("./core");
+const { fixBriefToMarkdown } = require("../../../build/diagnostics/src/index.js");
 
 // Monthly estimate = hourly tariff x 720 h (the Liara catalogue formula). Used when the live catalogue is not readable.
 const ESTIMATE_HOURLY_TOMANS = { "g2-small": 100, "g2-medium": 220, "g2-pro": 440 };
@@ -410,6 +412,23 @@ async function runL0(core, turn, name, args) {
       return { status: "ok", data };
     }
 
+    // MCP-only tools (EVALUATION R3). Both are read-only.
+    case "incident_get_fix_brief": {
+      const current = core.state.incident;
+      const brief = core.state.fixBrief;
+      if (!current || !brief) return err("NO_INCIDENT", { next_fa: "اول یک بررسی خطا (sre_investigate) انجام دهید." });
+      if (args.incident_id && args.incident_id !== current.id) {
+        return err("INCIDENT_NOT_FOUND", { next_fa: "فقط حادثه‌ی جاری قابل دریافت است." });
+      }
+      return { status: "ok", data: { incidentId: current.id, markdown: core.redact(fixBriefToMarkdown(brief)) } };
+    }
+
+    case "approval_status": {
+      const approval = core.publicApproval(String(args.approvalId ?? ""));
+      if (!approval) return err("UNKNOWN_APPROVAL");
+      return { status: "ok", data: approval };
+    }
+
     case "sre_investigate": {
       const out = await investigate(core, turn, { symptom: String(args.symptom_fa || "") });
       // The top hypothesis' explanation is not in the investigate payload; take it from the stored incident.
@@ -429,7 +448,7 @@ async function runL0(core, turn, name, args) {
 /** The executeTool given to the Orchestrator. Also used by the HTTP tool endpoint with a throwaway turn. */
 function makeToolRunner(core, turn = newTurn()) {
   return async function executeTool(name, args) {
-    const spec = findTool(name);
+    const spec = findTool(name) || MCP_TOOL_SPECS.find((t) => t.name === name);
     if (!spec) return err("UNKNOWN_TOOL");
     const input = args ?? {};
     const invalid = validateToolArgs(spec, input);

@@ -44,7 +44,8 @@ function createCore(options = {}) {
   const redactor = new SecretRedactor({ env });
   // The Liara client is swappable at runtime (Simple mode connect/disconnect): always read it as core.liara.
   const liaraBaseUrl = env.SOKAN_LIARA_BASE_URL || undefined;
-  const liara = options.liara || new LiaraClient({ apiToken: env.LIARA_API_TOKEN, teamID: env.LIARA_TEAM_ID, baseUrl: liaraBaseUrl });
+  const liaraDnsUrl = env.SOKAN_LIARA_DNS_URL || undefined;
+  const liara = options.liara || new LiaraClient({ apiToken: env.LIARA_API_TOKEN, teamID: env.LIARA_TEAM_ID, baseUrl: liaraBaseUrl, dnsBaseUrl: liaraDnsUrl });
   const envLiara = env.LIARA_API_TOKEN ? liara : null;
   const llm = options.llm || LlmClient.fromEnv(env);
   const orchestrator = new Orchestrator(llm);
@@ -65,6 +66,7 @@ function createCore(options = {}) {
     /** Client built from LIARA_API_TOKEN at startup; it wins over any saved token and cannot be forgotten. */
     envLiara,
     liaraBaseUrl,
+    liaraDnsUrl,
     /** Live app used by the operator console (SOKAN_APP) or the project selected in Simple mode. */
     liveAppName: env.SOKAN_APP && env.SOKAN_APP.length > 0 ? env.SOKAN_APP : null,
     /** Test/stub override for the public app URL, with {name} as the placeholder. Unset in production. */

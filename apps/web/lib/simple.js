@@ -125,11 +125,11 @@ function fromLiara(core, status, error, what_fa) {
 }
 
 function makeLiara(core, token, teamID) {
-  return new LiaraClient({ apiToken: token, teamID, baseUrl: core.liaraBaseUrl, isSimulated: false });
+  return new LiaraClient({ apiToken: token, teamID, baseUrl: core.liaraBaseUrl, dnsBaseUrl: core.liaraDnsUrl, isSimulated: false });
 }
 
 function simulatedLiara(core) {
-  return new LiaraClient({ isSimulated: true, baseUrl: core.liaraBaseUrl });
+  return new LiaraClient({ isSimulated: true, baseUrl: core.liaraBaseUrl, dnsBaseUrl: core.liaraDnsUrl });
 }
 
 // ---------- project ----------

@@ -11,9 +11,10 @@ const path = require("path");
 
 const { createCore } = require("./lib/core");
 const {
-  SESSION_COOKIE, sendJson, sendText, authenticate, checkPost, readBody, parseJsonObject,
+  SESSION_COOKIE, sendJson, sendText, checkPost, readBody, parseJsonObject, createAccessControl,
 } = require("./lib/http");
-const { TOOL_SPECS, validateToolArgs } = require("../../build/llm/src/index.js");
+const { validateToolArgs } = require("../../build/llm/src/index.js");
+const { MCP_TOOL_SPECS } = require("../../build/mcp/src/index.js");
 const { fixBriefToMarkdown } = require("../../build/diagnostics/src/index.js");
 const { handleChat } = require("./lib/chat");
 const { makeToolRunner, newTurn, selectPlan } = require("./lib/tools");
@@ -44,6 +45,8 @@ const ENV_KEY_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const host = process.env.SOKAN_HOST || "127.0.0.1";
 const port = Number(process.env.SOKAN_PORT || process.env.PORT || 4000);
 const token = process.env.SOKAN_CONSOLE_TOKEN || crypto.randomBytes(16).toString("hex");
+// Agent credential for MCP (role "agent"): read, propose via /api/tools, never approve (EVALUATION R1).
+const access = createAccessControl({ host, port, consoleToken: token });
 const core = createCore({ token, chaosPort: process.env.CHAOS_PORT });
 simple.initSimple(core);
 
@@ -217,7 +220,7 @@ async function apiRoute(req, res, url, via) {
   }
   if (parts[1] === "tools") {
     const name = parts[2];
-    const spec = TOOL_SPECS.find((t) => t.name === name);
+    const spec = MCP_TOOL_SPECS.find((t) => t.name === name);
     if (!spec) return sendJson(res, 404, { status: "error", error: "UNKNOWN_TOOL" });
     const args = body.args === undefined ? {} : body.args;
     if (args === null || typeof args !== "object" || Array.isArray(args)) {
@@ -242,10 +245,10 @@ async function apiRoute(req, res, url, via) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", "http://localhost");
-    if (!url.pathname.startsWith("/api/")) return serveStatic(req, res, url);
-    const via = authenticate(req, token);
-    if (!via) return unauthorized(res);
-    return await apiRoute(req, res, url, via);
+    const gate = access.gate(req, res, url);
+    if (gate.kind === "static") return serveStatic(req, res, url);
+    if (gate.kind === "deny") return sendJson(res, gate.status, gate.body);
+    return await apiRoute(req, res, url, gate.via);
   } catch (err) {
     if (!res.headersSent) {
       sendJson(res, 500, { ok: false, error: "INTERNAL", message_fa: "خطای داخلی سرور؛ دوباره تلاش کنید." });
