@@ -99,12 +99,15 @@ describe("Console roles and headers (EVALUATION R1)", () => {
     assert.strictEqual(res.json.code, "FORBIDDEN_HOST");
   });
 
-  it("sends X-Frame-Options, Referrer-Policy and a default-src CSP on the page", async () => {
+  it("sends X-Frame-Options, Referrer-Policy and a same-origin CSP on the page", async () => {
     const res = await raw(port, { urlPath: "/", headers: { Host: `127.0.0.1:${port}` } });
     assert.strictEqual(res.status, 200);
     assert.strictEqual(res.headers["x-frame-options"], "DENY");
     assert.strictEqual(res.headers["referrer-policy"], "no-referrer");
-    assert.strictEqual(res.headers["content-security-policy"], "default-src 'self'");
+    const csp = res.headers["content-security-policy"];
+    assert.match(csp, /(^|;\s*)default-src 'self'(;|$)/);
+    assert.match(csp, /connect-src 'self'/);
+    assert.match(csp, /style-src 'self' 'unsafe-inline'/);
   });
 
   it("answers 401 without a token, and accepts the console token and the agent token in the header", async () => {

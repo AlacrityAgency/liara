@@ -4,7 +4,7 @@
 // Live executors act on params.project (the approved app), never on whatever app the console has selected.
 
 const crypto = require("crypto");
-const { verify } = require("../../../build/diagnostics/src/index.js");
+const { verify, isMitigationOnlyRemediation, percentile } = require("../../../build/diagnostics/src/index.js");
 const { LIARA_LIMITS } = require("../../../build/liara-client/src/index.js");
 const { DEMO_DIR, PLAN_LADDER, sleep, unique } = require("./core");
 const { snapshot } = require("./evidence");
@@ -87,6 +87,7 @@ async function deploySim(core, p, progress = defaultProgress(core)) {
     progress("ready", SIM(state === "READY" ? "نسخه‌ی محلی آماده است" : "نسخه‌ی محلی پاسخ نداد"));
     core.addRelease({
       id: newReleaseId(),
+      kind: "release",
       state,
       createdAt: started,
       finishedAt: new Date().toISOString(),
@@ -249,7 +250,7 @@ const EXECUTORS = {
     for (const value of Object.values(core.app.appEnvs)) core.registerSecret(value);
     await simRestart(core);
     core.addRelease({
-      id: newReleaseId(), state: "READY", createdAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+      id: newReleaseId(), kind: "release", state: "READY", createdAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
       envKeys: Object.keys(core.app.appEnvs), message: `rollback to ${target.id}`, source: "local",
       envSnapshot: { ...core.app.appEnvs },
     });
@@ -270,6 +271,10 @@ const EXECUTORS = {
 const WAIT_SETTLE_MS_LIVE = 90000;
 const OBSERVE_MS_LIVE = 60000;
 const OBSERVE_ROUNDS_SIM = 6;
+// CPU under load: the simulated runtime samples CPU every tick (3 s), so the loaded window must span several ticks.
+const OBSERVE_LOAD_MS_SIM = 12000;
+const LOAD_CONCURRENCY = 4;
+const LOAD_PAUSE_MS = 150;
 
 async function settle(core, project) {
   if (core.isLive()) {
@@ -286,7 +291,27 @@ async function settle(core, project) {
   if (core.runtime.running) await waitReady(core, 10000);
 }
 
-async function observe(core, paths) {
+/** Requests to the app's failing path (or /health when nothing else is known), a few at a time. */
+function loadTargets(paths) {
+  const hot = paths.filter((p) => p !== "/health");
+  return hot.length > 0 ? hot : paths;
+}
+
+/** Drives concurrent requests for durationMs so the CPU samples taken meanwhile reflect the hot path. */
+async function driveLoad(core, paths, durationMs) {
+  const targets = loadTargets(paths);
+  const deadline = Date.now() + durationMs;
+  while (Date.now() < deadline && targets.length > 0) {
+    await Promise.all(Array.from({ length: LOAD_CONCURRENCY }, () => Promise.all(targets.map((p) => core.probeNow(p)))));
+    await sleep(LOAD_PAUSE_MS);
+  }
+}
+
+async function observe(core, paths, { underLoad = false } = {}) {
+  if (underLoad) {
+    await driveLoad(core, paths, core.isLive() ? OBSERVE_MS_LIVE : OBSERVE_LOAD_MS_SIM);
+    return;
+  }
   if (core.isLive()) {
     for (let i = 0; i < OBSERVE_MS_LIVE / 10000; i++) {
       for (const p of paths) await core.probeNow(p);
@@ -300,14 +325,16 @@ async function observe(core, paths) {
   }
 }
 
-function legacySnapshot(v) {
+/** Incident snapshot in the contract shape. p95 latency is taken from the probe samples of the same evidence. */
+function legacySnapshot(v, evidence) {
+  const latencies = (evidence?.probes || []).map((p) => p.ms).filter((ms) => typeof ms === "number");
   return {
     ts: v.ts,
     appletState: v.appletsRunning ? "running" : "stopped",
     errorsPerMinute: Math.round(v.errorRatePerMin),
     probeOk: v.probe.filter((p) => p.status !== null && p.status >= 200 && p.status < 400).length,
     probeTotal: v.probe.length,
-    p95Ms: null,
+    p95Ms: percentile(latencies, 95),
     memoryPeakPct: v.memP95Pct,
     cpuPct: v.cpuP95Pct,
   };
@@ -352,6 +379,10 @@ async function executeApproved(core, approvalId, opts = {}) {
   // Scaling to zero is a deliberate stop, so there is nothing to verify as "running".
   const criteria = meta.criteria
     || (tool === "app_scale" && params.scale === 0 ? [] : DEFAULT_CRITERIA[tool] || []);
+  // CPU criteria with underLoad need samples taken while requests are driven (EVALUATION R5).
+  const underLoad = criteria.some((c) => c.kind === "cpu_below_pct" && c.underLoad === true);
+  // A restart of a leaking process only mitigates; the verdict then reads "mitigated" (EVALUATION R5).
+  const mitigationOnly = isMitigationOnlyRemediation(meta.runbookId, tool);
   const probePaths = unique([
     ...(meta.probePaths || []),
     ...criteria.filter((c) => c.path).map((c) => c.path),
@@ -369,7 +400,7 @@ async function executeApproved(core, approvalId, opts = {}) {
 
   const windowStart = incident ? incident.window.start : new Date(Date.now() - 30 * 60000).toISOString();
   let before = null;
-  if (criteria.length > 0) before = await snapshot(core, windowStart, probePaths);
+  if (criteria.length > 0) before = await snapshot(core, windowStart, probePaths, { underLoad: false });
 
   const actionStart = new Date().toISOString();
   let exec;
@@ -389,31 +420,32 @@ async function executeApproved(core, approvalId, opts = {}) {
     await settle(core, params.project);
     step(core, "settle", "done");
     step(core, "observe", "running");
-    await observe(core, probePaths);
+    await observe(core, probePaths, { underLoad });
     step(core, "observe", "done");
     step(core, "verify", "running");
     report("verify", "در حال راستی‌آزمایی");
-    after = await snapshot(core, actionStart, probePaths);
-    verification = verify(before.snapshot, after.snapshot, criteria);
-    step(core, "verify", verification.passed ? "done" : "failed");
+    after = await snapshot(core, actionStart, probePaths, { underLoad });
+    verification = verify(before.snapshot, after.snapshot, criteria, { mitigationOnly });
+    step(core, "verify", verification.outcome !== "unresolved" ? "done" : "failed");
   } else {
     step(core, "settle", exec.ok ? "done" : "failed");
     step(core, "observe", exec.ok ? "done" : "failed");
     step(core, "verify", "failed");
   }
 
-  // resolved: the incident is fixed (needs a passing verification). auditOk: the action ran and was not refuted.
-  const resolved = exec.ok && verification !== null && verification.passed;
+  // outcome comes from the verifier: resolved | mitigated | unresolved. No verification means unresolved.
+  const outcome = exec.ok && verification ? verification.outcome : "unresolved";
+  const resolved = outcome === "resolved";
   const auditOk = exec.ok && (verification === null || verification.passed);
   const durationMs = Date.now() - started;
   core.state.verification = verification;
   if (incident) {
-    incident.status = resolved ? "resolved" : "unresolved";
+    incident.status = outcome;
     if (before && after) {
       incident.verification = {
-        before: legacySnapshot(before.snapshot),
-        after: legacySnapshot(after.snapshot),
-        passed: resolved,
+        before: legacySnapshot(before.snapshot, before.evidence),
+        after: legacySnapshot(after.snapshot, after.evidence),
+        passed: verification ? verification.passed : false,
         verdict: resolved ? "resolved" : "partial",
       };
     }
@@ -438,6 +470,7 @@ async function executeApproved(core, approvalId, opts = {}) {
     ok: exec.ok,
     mode,
     result_fa: mode === "simulated" && !resultText.startsWith("(شبیه‌سازی") ? SIM(resultText) : resultText,
+    outcome,
     ...(verification ? { verification } : {}),
     ...(exec.ok ? {} : { error: exec.error }),
   });
@@ -445,6 +478,7 @@ async function executeApproved(core, approvalId, opts = {}) {
   return {
     ok: exec.ok,
     resolved,
+    outcome,
     tool,
     approvalId,
     detail_fa: resultText,

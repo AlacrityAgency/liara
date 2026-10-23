@@ -115,7 +115,12 @@ function gateRequest(req, res, url, cfg) {
     return deny(403, "FORBIDDEN_HOST", "نام میزبان درخواست مجاز نیست؛ کنسول را از http://127.0.0.1 یا http://localhost باز کنید.");
   }
   if (!url.pathname.startsWith("/api/")) {
-    res.setHeader("Content-Security-Policy", "default-src 'self'");
+    // Scripts and fetches (incl. SSE /api/events) are same-origin only. Inline style attributes are used by the
+    // console's rendering, so style-src allows them; images allow the data: favicon.
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    );
     return { kind: "static" };
   }
   const who = resolveRole(req, cfg.consoleToken, cfg.agentToken);

@@ -5,7 +5,7 @@
 const fs = require("fs");
 const path = require("path");
 const {
-  DiagnosticEngine, failingPathsFromEvidence, fixBriefToMarkdown, isMitigationOnlyRemediation,
+  DiagnosticEngine, failingPathsFromEvidence, fixBriefToMarkdown,
 } = require("../../../build/diagnostics/src/index.js");
 const { collectEvidence } = require("./evidence");
 const { PLAN_LADDER, SIM_DEFAULT_ENVS, unique } = require("./core");
@@ -37,10 +37,8 @@ async function buildProposal(core, incident, top, rem) {
     incidentId: incident.id,
     remediationId: rem.id,
     criteria: rem.successCriteria ? [rem.successCriteria] : [],
-    // The executor samples CPU while driving load when underLoad is set (EVALUATION R5), and reads
-    // mitigationOnly to end such a remediation as "mitigated" instead of "resolved".
-    underLoad: !!(rem.successCriteria && rem.successCriteria.underLoad),
-    mitigationOnly: isMitigationOnlyRemediation(top.runbookId, rem.action),
+    // The executor derives underLoad (CPU criteria) and mitigationOnly from runbookId + tool (EVALUATION R5).
+    runbookId: top.runbookId,
     probePaths: failingPathsFromEvidence(core.lastEvidence || { probes: [], logs: [] }),
   };
 

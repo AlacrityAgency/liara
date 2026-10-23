@@ -12,6 +12,11 @@
 <body>
   <div class="page">
     <!-- Shown only in the simulated demo mode -->
+    <!-- Shown when the audit chain does not verify (GET /api/simple/session: auditOk false) -->
+    <div id="auditBanner" class="notice warn" role="alert" hidden>
+      <p class="n-what">هشدار: زنجیره‌ی ممیزی شکسته است.</p>
+      <p class="n-why">دفتر ممیزی ممکن است دستکاری شده باشد. پیش از ادامه، فایل audit.jsonl را در پوشه‌ی .sokan بررسی کنید.</p>
+    </div>
     <div id="simBanner" class="sim-banner" role="status" hidden>
       <span>حالت آزمایشی — روی لیارا چیزی ساخته نمی‌شود</span>
       <button type="button" class="link-btn" id="simConnectBtn">اتصال حساب واقعی</button>

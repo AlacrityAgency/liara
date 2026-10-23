@@ -338,12 +338,30 @@ function createCore(options = {}) {
     return Number.isFinite(cap) && cap > 0 ? cap : core.app.ramMB;
   };
 
+  // Audit chain integrity, cached for a few seconds because buildState runs on every state change.
+  let auditCache = { at: 0, ok: true };
+  const auditIntegrityOk = () => {
+    if (Date.now() - auditCache.at < 5000) return auditCache.ok;
+    let ok = false;
+    try {
+      ok = audit.verify().ok === true;
+    } catch {
+      ok = false;
+    }
+    auditCache = { at: Date.now(), ok };
+    return ok;
+  };
+
+  core.auditOk = auditIntegrityOk;
+
   core.buildState = () => {
     const s = core.state;
     const ephemeral = approvals.isEphemeralSecret;
     return core.clean({
       mode: core.mode(),
       isEphemeralSecret: ephemeral,
+      /** False when the audit chain is broken or unreadable: both UIs show a warning. */
+      auditOk: auditIntegrityOk(),
       warning_fa: ephemeral
         ? "کلید ثابت (SOKAN_SECRET) تنظیم نشده است؛ تأییدها و Audit با ری‌استارت کنسول از بین می‌روند."
         : null,
@@ -396,6 +414,7 @@ function releaseView(r) {
     envKeys: r.envKeys,
     message: r.message,
     source: r.source,
+    kind: r.kind || "release",
   };
 }
 

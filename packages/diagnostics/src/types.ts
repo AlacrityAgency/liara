@@ -1,22 +1,9 @@
 import type { IncidentStatus, Signal, SignalKind, SuccessCriterion } from "@sokan/contracts";
 
-/**
- * Signal kinds, criteria and statuses this package emits that the contracts do not list yet (EVALUATION R5, R9).
- * They are added here so the contracts package stays unchanged; the engine casts them at its output boundary.
- * Consumers that switch on these values must treat unknown kinds as informational.
- */
-export type ExtraSignalKind = "PORT_CONFLICT" | "TLS_ERROR" | "BUILD_ERROR" | "PROXY_UPSTREAM_DOWN";
-export type DiagSignalKind = SignalKind | ExtraSignalKind;
-export type DiagIncidentStatus = IncidentStatus | "diagnosed" | "mitigated";
-
-/** probe_not_5xx: the path answered with a status below 500 (a 404 still means the app is up). Status 0 or null fails. */
-export type ProbeNot5xxCriterion = { kind: "probe_not_5xx"; path: string };
-/** cpu_below_pct with underLoad: the verifier also requires CPU samples taken while requests were driven (R5). */
-export type CpuBelowCriterion = { kind: "cpu_below_pct"; pct: number; underLoad?: boolean };
-export type DiagCriterion =
-  | Exclude<SuccessCriterion, { kind: "cpu_below_pct" }>
-  | CpuBelowCriterion
-  | ProbeNot5xxCriterion;
+/** Aliases kept for the diagnostics package; the contracts own the kinds, statuses and criteria. */
+export type DiagSignalKind = SignalKind;
+export type DiagIncidentStatus = IncidentStatus;
+export type DiagCriterion = SuccessCriterion;
 
 /**
  * Input to the diagnostic engine: what the collectors returned for one investigation window.

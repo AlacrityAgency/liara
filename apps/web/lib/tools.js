@@ -160,6 +160,16 @@ async function currentPlan(core) {
   return estimatePlan(planID);
 }
 
+/** Monthly price of a plan in tomans, from the live catalogue when readable, else the estimate. Null when unknown. */
+async function monthlyCostTomans(core, planID) {
+  if (core.isLive()) {
+    const catalog = await livePlans(core).catch(() => null);
+    const pick = Array.isArray(catalog) ? catalog.find((p) => p.planID === planID) : undefined;
+    if (pick && typeof pick.monthlyPrice === "number") return Math.round(pick.monthlyPrice);
+  }
+  return estimatePlan(planID).monthlyPriceTomans ?? null;
+}
+
 function previousGoodRelease(core) {
   const ready = core.releases.filter((r) => r.state === "READY" && r.envSnapshot);
   return ready.length >= 2 ? ready[ready.length - 2] : null;
@@ -277,10 +287,15 @@ async function prepareMutation(core, turn, name, args) {
       const { variables, missing } = valuesFor(core, keys);
       if (missing.length) return MISSING_VALUES(missing);
       const planID = args.plan_id || PLAN_LADDER[1].planID;
+      const dir = allowedProjectDir(core, args.project_path);
+      const monthly = await monthlyCostTomans(core, planID);
+      const cost_fa = monthly === null
+        ? "هزینه‌ی ماهانه‌ی این پلن نامشخص است؛ پیش از تأیید در کنسول لیارا ببینید"
+        : `${core.isLive() ? "" : "تخمینی: "}حدود ${monthly.toLocaleString("fa-IR")} تومان در ماه (پلن ${planID})`;
       return {
         tool: "deploy",
-        params: { project: app, planID, port: core.isLive() ? analyzed.profile.detectedPort : core.app.port, platform: analyzed.profile.detectedPlatform, variables },
-        card: { ...base, title_fa: "ساخت اپ و استقرار نسخه", what_fa: `ساخت/به‌روزرسانی اپ ${app} با پلن ${planID}، تنظیم ${describeEnvs(core, variables) || "بدون متغیر"}، و استقرار نسخه‌ی فعلی`, impact_fa: "زمان ساخت حدود یک دقیقه؛ نسخه‌ی قبلی تا آماده شدن نسخه‌ی جدید بالاست", rollback_fa: "بازگشت به ریلیز قبلی", successCriteria_fa: "ریلیز READY و /health پاسخ ۲۰۰" },
+        params: { project: app, ...(dir ? { dir } : {}), planID, port: core.isLive() ? analyzed.profile.detectedPort : core.app.port, platform: analyzed.profile.detectedPlatform, variables },
+        card: { ...base, cost_fa, title_fa: "ساخت اپ و استقرار نسخه", what_fa: `ساخت/به‌روزرسانی اپ ${app} با پلن ${planID}، تنظیم ${describeEnvs(core, variables) || "بدون متغیر"}، و استقرار نسخه‌ی فعلی`, impact_fa: "زمان ساخت حدود یک دقیقه؛ نسخه‌ی قبلی تا آماده شدن نسخه‌ی جدید بالاست", rollback_fa: "بازگشت به ریلیز قبلی", successCriteria_fa: "ریلیز READY و /health پاسخ ۲۰۰" },
       };
     }
 

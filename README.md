@@ -1,195 +1,138 @@
-# سُکان — همکار DevOps/SRE برای لیارا
+# سُکان: سایتت را روی لیارا آنلاین کن، و وقتی خراب شد درستش کن
 
-> **English summary.** Sokan is a DevOps/SRE assistant for apps hosted on Liara. It analyzes a Node, Next, Python, PHP, Go or Docker project, recommends a plan, deploys, reads logs, metrics and HTTP probes, diagnoses failures, and asks for explicit approval before any change. Approvals are bound to the exact parameters and checked on the server. The repo is a TypeScript monorepo with a Persian web console, a stdio MCP server for coding agents, and a demo target app (`chaos-shop`). Live Liara calls need `LIARA_API_TOKEN`. Without it, actions run against a local simulated target. The implementation status is listed honestly below.
+Sokan is a Persian-first helper for vibe coders who built a site with Cursor, Claude or Lovable and want it live on Liara without learning servers. It deploys a Node, Next, Python, PHP, Go or Docker project from its folder, asks for one approval before anything that costs money or restarts the site, and when the site breaks it reads the real logs, probes and metrics, names the likely cause, and either applies an approved fix or writes a Fix Brief for Cursor or Claude. The repo is a TypeScript monorepo with a Persian console (`/`), an advanced console (`/advanced`), a stdio MCP server, and a demo target app (`chaos-shop`). Without a Liara token everything runs against the local demo.
 
 <div dir="rtl">
 
-🎬 ویدئوی دمو: <لینک پس از ضبط>
+ویدئوی دمو: `<لینک پس از ضبط>`
 
-## چه می‌کند
+## ۳ دقیقه تا سایت آنلاین
 
-«سُکان» یک دستیار فارسی‌زبان برای استقرار و عارضه‌یابی اپلیکیشن‌های روی لیارا است. اپ شما را تحلیل می‌کند، پلن مناسب پیشنهاد می‌دهد و استقرار را انجام می‌دهد. سپس لاگ، متریک و پاسخ HTTP را می‌خواند و علت خطا را با شواهد توضیح می‌دهد.
+پیش‌نیاز: Node.js نسخه‌ی ۲۲ (یا ۲۰ به بالا) و یک حساب لیارا با کلید API (بخش بعد).
 
-هر تغییر حساس فقط با کارت تأیید صریح کاربر اجرا می‌شود. پارامترهای کارت با اجرا یکی است، و پس از اجرا وضعیت قبل و بعد مقایسه می‌شود. این مقایسه نتیجه‌ی «حل شد» یا «حل نشد» را تعیین می‌کند.
+### گزینه‌ی A: از ترمینال، داخل پوشه‌ی پروژه‌ات
 
-> این بخش هدف محصول را توصیف می‌کند. وضعیت هر قابلیت در جدول «وضعیت پیاده‌سازی» آمده است.
-
-## اجرای سریع
-
-پیش‌نیاز: Node.js نسخه‌ی ۲۲ (یا ۲۰ به بالا).
+سُکان هنوز روی npm منتشر نشده؛ فعلاً از همین مخزن نصبش کن:
 
 ```bash
-npm install     # نصب وابستگی‌ها
-npm test        # بیلد TypeScript و اجرای تست‌ها
-npm start       # بیلد و اجرای کنسول وب سُکان
+git clone <آدرس-مخزن> sokan-liara && cd sokan-liara
+npm install && npm run build && npm link
+cd /مسیر/پروژه‌ی-سایتت
+sokan
 ```
 
-- سُکان آدرسی شبیه `http://127.0.0.1:4000/?t=<token>` چاپ می‌کند. آن را در مرورگر باز کنید. اگر `SOKAN_CONSOLE_TOKEN` تنظیم نشده باشد، توکن تصادفی ساخته و در ترمینال چاپ می‌شود.
-- حالت زنده: `LIARA_API_TOKEN` و `SOKAN_APP` (نام اپلیکیشن) را تنظیم کنید. بدون توکن، همه‌ی اقدامات روی اپ دمو محلی `chaos-shop` اجرا می‌شوند و پیام‌هایشان با «(شبیه‌سازی محلی)» شروع می‌شود.
-- گفت‌وگوی مبتنی بر LLM: `SOKAN_LLM_API_KEY`، `SOKAN_LLM_BASE_URL` (پیش‌فرض `https://agentrouter.org/v1`) و `SOKAN_LLM_MODEL`. بدون کلید، گفت‌وگو قاعده‌محور است.
-- فهرست همه‌ی متغیرها در `.env.example` است. سُکان فایل `.env` را خودکار نمی‌خواند؛ مثلاً با `node --env-file=.env apps/web/server.js` اجرا کنید.
+خروجی یک استقرار (کوتاه‌شده؛ نوار پیشرفت در ترمینال یک خط است که پر می‌شود):
 
-> **یادداشت وضعیت:** کنسول فعلی هنوز روی `0.0.0.0` گوش می‌دهد و توکن را اعمال نمی‌کند. تنظیم `127.0.0.1` و توکن ورود در جدول وضعیت به‌عنوان «در حال انجام» ثبت شده است.
-
-## معماری کوتاه
-
-```mermaid
-flowchart LR
-    U["کاربر در کنسول فارسی"] --> W["apps/web (کنسول، SSE، کارت تأیید)"]
-    A["Coding Agent"] --> M["packages/mcp (stdio، بدون قدرت تأیید)"]
-    M -->|"HTTP + توکن"| W
-    W --> P["packages/policy (L0..L3، توکن HMAC، ممیزی، سانسور)"]
-    P --> C["هسته: analyzer، diagnostics، llm"]
-    C --> L["packages/liara-client"]
-    L --> LI["api.liara.ir و dns-service.liara.ir"]
-    W -. "حالت شبیه‌سازی" .-> S["demo/chaos-shop (فرآیند محلی)"]
+```text
+$ sokan --name my-site
+یک سایت Next.js روی پورت ۳۰۰۰ پیدا کردم.
+موجودی حساب: ۵۰۰٬۰۰۰ تومان
+این کار ماهی ۱۵۸٬۴۰۰ تومان هزینه دارد. ادامه بدهم؟ (y/N) y
+[████████████████████████] ۱۰۰٪ برنامه مستقر شد
+✅ سایتت آنلاین شد: https://my-site.liara.run
 ```
 
-| بسته یا پوشه | مسئولیت | وضعیت |
-|---|---|---|
-| `packages/contracts` | نوع‌های مشترک: کارت تأیید، Incident، FixBrief، تعریف ابزارها | پیاده‌شده |
-| `packages/policy` | سطوح ریسک L0 تا L3، توکن HMAC یک‌بارمصرف گره‌خورده به پارامترها، ممیزی زنجیره‌ای، سانسور راز | پیاده‌شده (کتابخانه) |
-| `packages/analyzer` | تحلیل پروژه (Node، Next، Python، PHP، Go، Docker)، تشخیص پورت و متغیرها، پیشنهاد سه پلن | پیاده‌شده (کتابخانه) |
-| `packages/diagnostics` | پارس لاگ و stack trace، ۱۵ runbook، امتیازدهی فرضیه‌ها، Fix Brief، راستی‌آزمایی قبل و بعد | پیاده‌شده (کتابخانه) |
-| `packages/liara-client` | کلاینت تایپ‌شده‌ی API لیارا، بسته‌بندی سورس، ترجمه‌ی خطای HTTP به پیام سه‌بخشی | پیاده‌شده (کتابخانه) |
-| `packages/llm` | کلاینت مدل زبانی سازگار با OpenAI، ارکستریتور tool-calling، مسیریاب قاعده‌محور | پیاده‌شده (کتابخانه) |
-| `packages/mcp` | سرور MCP روی stdio برای Coding Agentها. L2 و L3 فقط درخواست تأیید می‌سازند | پیاده‌شده (کنسول هنوز `/api/tools` ندارد) |
-| `apps/web` | کنسول وب فارسی، رویدادهای SSE، کارت‌های تأیید، تب سناریوهای دمو | شبیه‌سازی محلی |
-| `demo/chaos-shop` | اپ دمو با ۶ حالت خرابی قابل‌کنترل از طریق متغیر محیطی | پیاده‌شده |
+عدد قیمت و موجودی نمونه‌اند. در اجرای واقعی برای اپ جدید، سُکان نام اپ و پلن (با Enter، پلن پیشنهادی) را هم می‌پرسد. متغیرهای لازم را از فایل `.env` پروژه می‌خواند و اگر نباشد می‌پرسد؛ مقدار محرمانه مخفی تایپ می‌شود.
 
-## اتصال به APIهای لیارا
-
-- **احراز هویت:** هدر `Authorization: Bearer <LIARA_API_TOKEN>`. اگر `LIARA_TEAM_ID` تنظیم شده باشد، به‌صورت پارامتر `teamID` افزوده می‌شود.
-- **پایه‌ی آدرس:** `https://api.liara.ir` برای اپ‌ها و `https://dns-service.liara.ir` برای DNS.
-- **حالت زنده:** وقتی `LIARA_API_TOKEN` باشد، کلاینت درخواست واقعی می‌فرستد. بدون توکن، کلاینت هیچ درخواستی نمی‌فرستد و خطای «حالت شبیه‌سازی» برمی‌گرداند.
-- **حالت شبیه‌سازی:** اپ `chaos-shop` به‌عنوان فرآیند محلی روی پورت `CHAOS_PORT` (پیش‌فرض ۳۱۰۰) اجرا می‌شود. لاگ، پروب HTTP و حافظه از همین فرآیند خوانده می‌شود، نه از API لیارا.
-
-| endpoint لیارا | ابزار سُکان | ریسک | منبع | وضعیت |
-|---|---|---|---|---|
-| `GET /v1/me`، `GET /v1/billing` | `account_status` | L0 | OpenAPI | در کلاینت |
-| `GET /v1/projects/{name}` | `app_status` | L0 | OpenAPI | در کلاینت |
-| `POST /v1/projects` | بخشی از `deploy` | L2 | OpenAPI + CLI | در کلاینت |
-| `POST /v2/projects/{name}/sources` | بخشی از `deploy` | L1 | OpenAPI + CLI | در کلاینت |
-| `POST /v2/projects/{name}/releases` | `deploy`، `release_rollback` | L2 | OpenAPI + CLI | در کلاینت |
-| `GET /v2/releases/{id}/build-logs` | پایش بیلد در `deploy` | L0 | CLI | در کلاینت (فقط CLI) |
-| `POST /v1/projects/{name}/actions/restart` | `app_restart` | L2 | OpenAPI | در کلاینت |
-| `POST /v1/projects/{name}/actions/scale` | `app_scale` | L2؛ L3 اگر `scale=0` | OpenAPI | در کلاینت |
-| `POST /v1/projects/{name}/resize` | `app_resize_plan` | L2 | OpenAPI | در کلاینت |
-| `POST /v1/projects/update-envs` | `app_update_envs` | L2 | OpenAPI | در کلاینت |
-| `POST /v1/projects/update-port` | `app_update_port` | L2 | CLI | در کلاینت (فقط CLI) |
-| `GET /v1/projects/{name}/logs` | `sre_investigate` | L0 | OpenAPI | در کلاینت |
-| `GET .../applets`، `.../metrics/summary`، `.../metrics/{cpu\|memory}`، `.../events` | `sre_investigate` | L0 | OpenAPI | در کلاینت |
-| `DELETE /v1/projects/{name}` | `app_delete` | L3 | OpenAPI | در کلاینت |
-| `/v1/domains`، `dns-service /api/v1/zones` | `domain_connect_guide` و ابزارهای دامنه | L0 تا L2 | OpenAPI | در کلاینت |
-
-جدول کامل endpointها و کدهای خطا در [`packages/liara-client/docs/api-matrix.md`](packages/liara-client/docs/api-matrix.md) آمده است. «در کلاینت» یعنی متد تایپ‌شده وجود دارد و در تست‌های واحد بررسی شده است. هنوز هیچ‌کدام از کنسول با توکن زنده صدا زده نمی‌شوند.
-
-## تعامل کاربر
-
-**نمونه‌ی گفت‌وگوی هدف** (این گفت‌وگو هنوز در کنسول زنده نیست):
-
-> **کاربر:** سایتم ۵۰۰ می‌دهد، ببین چرا.
->
-> **سُکان:** اپ `chaos-shop` روی `/api/items` خطای ۵۰۰ می‌دهد. شواهد: خطای `PrismaClientInitializationError` در لاگ و پاسخ ۵۰۰ در پروب HTTP. متغیر `DATABASE_URL` تنظیم نشده است (`src/db/client.js:24`). پیشنهاد: تنظیم `DATABASE_URL` و ری‌استارت اپ. کارت تأیید را ببینید.
-
-**کارت تأیید** (شش فیلد استاندارد، §۱۲.۲ وایت‌پیپر):
-
-| فیلد | نمونه |
-|---|---|
-| چه کاری | تنظیم متغیر `DATABASE_URL` و ری‌استارت `chaos-shop` |
-| چرا | ۵ پاسخ ۵۰۰ با خطای اتصال به دیتابیس در لاگ |
-| هزینه | بدون هزینه |
-| اثر | حدود ۱۰ ثانیه قطع کوتاه هنگام ری‌استارت |
-| بازگشت | حذف متغیر یا برگرداندن مقدار قبلی و ری‌استارت |
-| معیار موفقیت | `/api/items` کد ۲۰۰ بدهد و `/health` سالم بماند |
-
-**سطوح ریسک:**
-
-| سطح | معنی | نمونه‌ی ابزار (از `packages/llm/src/tools.ts` و `packages/policy/src/engine.ts`) |
-|---|---|---|
-| L0 | مشاهده؛ بدون کارت | `project_analyze`، `app_status`، `sre_investigate`، `limits_list`، `billing_get_balance` |
-| L1 | ایمن و برگشت‌پذیر؛ اجرا و ثبت در زمان‌خط | `source_upload`، `release_cancel`، `domain_add`، `domain_enable_ssl`، `db_backup_create` |
-| L2 | حساس؛ کارت تأیید و توکن امضاشده‌ی سرور | `app_restart`، `app_update_envs`، `app_resize_plan`، `app_update_port`، `app_scale` (روشن)، `deploy`، `release_rollback` |
-| L3 | بحرانی؛ تایپ نام دقیق اپ و پنجره‌ی لغو ۱۰ ثانیه‌ای | `app_delete`، `app_scale` با `scale=0` |
-
-تأیید در سمت سرور بررسی می‌شود. توکن به هش پارامترها گره خورده، پنج دقیقه اعتبار دارد و فقط یک بار مصرف می‌شود. اگر پارامترها بین کارت و اجرا تغییر کنند، اجرا رد می‌شود.
-
-## استفاده از MCP با Claude Code
-
-سرور MCP روی stdio اجرا می‌شود و هیچ قدرت تأیید ندارد. ابزارهای L2 و L3 فقط یک درخواست تأیید با آدرس کنسول برمی‌گردانند.
+### گزینه‌ی B: از مرورگر
 
 ```bash
-npm run build
-SOKAN_CONSOLE_URL=http://127.0.0.1:4000 SOKAN_CONSOLE_TOKEN=<توکن کنسول> node build/mcp/src/bin.js
+cd /مسیر/پروژه‌ی-سایتت
+sokan ui
 ```
 
-نمونه‌ی `.mcp.json` برای Claude Code (مسیر را مطلق بگذارید):
+لینکی مثل `http://127.0.0.1:4000/?t=…` چاپ می‌شود؛ آن را در مرورگر باز کن. (اگر از داخل مخزن سُکان اجرا می‌کنی، `SOKAN_PROJECT_DIR=/مسیر/پروژه‌ات npm start` را بزن.) چهار قدم:
+
+1. کلید API لیارا را بچسبان. (یا «بدون حساب امتحان کن» برای دیدن نمونه؛ در این حالت چیزی روی لیارا ساخته نمی‌شود.)
+2. پوشه‌ی پروژه را تأیید کن و متغیرهای لازم را پر کن.
+3. پلن را انتخاب کن؛ پیشنهادی از قبل انتخاب است.
+4. «سایتم را بالا بیاور» را بزن و در کادر تأیید «بله، انجام بده» را بزن.
+
+## کلید API لیارا از کجا؟
+
+1. به https://console.liara.ir/API برو و با حساب لیارایت وارد شو.
+2. یک کلید (توکن) API بساز یا کلید موجود را کپی کن.
+3. آن را در فیلد «کلید API» سُکان یا وقتی ترمینال پرسید (ورودی مخفی است) بچسبان. سُکان آن را فقط برای بررسی به لیارا می‌فرستد و دوباره نشان نمی‌دهد. با `sokan logout` کلید ذخیره‌شده را پاک کن.
+
+شارژ حساب با خود توست: https://console.liara.ir/settings/billing. اگر موجودی کم باشد سُکان کسری را می‌گوید و بعد از شارژ دوباره بررسی می‌کند.
+
+## «سایتم مشکل داره»
+
+داخل پوشه‌ی پروژه `sokan fix` را بزن، یا در کنسول دکمه‌ی «سایتم مشکل داره» را بزن. سُکان:
+
+- شواهد واقعی را جمع می‌کند (لاگ‌ها، وضعیت نمونه‌ها، پاسخ HTTP سایت، مصرف منابع) و یک علت می‌گوید. اگر با شواهد مطمئن نباشد، همین را می‌گوید.
+- یک راه‌حل پیشنهاد می‌دهد: در CLI ری‌استارت، تغییر پورت یا تغییر پلن؛ در کنسول علاوه بر آن تنظیم متغیر جاافتاده و بازگشت به ریلیز قبلی. اگر راه‌حل خودکاری نباشد، فایل Fix Brief می‌سازد تا به Cursor یا Claude بدهی.
+- بعد از تأیید تو اجرا می‌کند و نتیجه را می‌سنجد. اگر ری‌استارت فقط موقتاً نشت حافظه را پنهان کند، نتیجه «موقتاً مهار شد» است و Fix Brief اصلاح کد را می‌دهد.
+
+**هیچ تغییری بدون تأیید صریح تو انجام نمی‌شود.** تأیید به پارامترهای نمایش‌داده‌شده گره خورده؛ اگر چیزی عوض شود اجرا متوقف می‌شود.
+
+## اتصال دامنه (ایرنیک)
+
+```bash
+sokan domain example.ir
+```
+
+سُکان منطقه‌ی DNS را در لیارا می‌سازد و سرورهای نام (NS) را نشان می‌دهد. این NSها را در nic.ir، بخش «تغییر سرورهای نام»، خودت وارد کن؛ ایرنیک API عمومی برای این کار ندارد. بعد از چند دقیقه تا چند ساعت:
+
+```bash
+sokan domain example.ir --check
+```
+
+وقتی NSها منتشر شده باشند، دامنه به سایت وصل و گواهی SSL گرفته می‌شود. برای دامنه‌ی اصلی (بدون زیردامنه) سُکان رکورد لازم را نشان می‌دهد.
+
+## استفاده در Cursor / Claude Code (MCP)
+
+1. کنسول را اجرا کن (`sokan ui`) و باز بگذار؛ MCP به آن وصل می‌شود.
+2. کلید عامل را از `<مسیر-مخزن>/.sokan/agent-token` بردار. همان را کنسول هنگام اجرا چاپ می‌کند.
+3. در ریشه‌ی پروژه‌ات فایل `.mcp.json` بساز:
 
 ```json
 {
   "mcpServers": {
     "sokan": {
       "command": "node",
-      "args": ["/absolute/path/to/sokan-liara/build/mcp/src/bin.js"],
+      "args": ["/مسیر/کامل/sokan-liara/build/mcp/src/bin.js"],
       "env": {
         "SOKAN_CONSOLE_URL": "http://127.0.0.1:4000",
-        "SOKAN_CONSOLE_TOKEN": "<توکن کنسول>"
+        "SOKAN_AGENT_TOKEN": "<توکن عامل از .sokan/agent-token>"
       }
     }
   }
 }
 ```
 
-ابزارهای MCP همان ابزارهای ارکستریتور به‌علاوه‌ی `incident_get_fix_brief` (Fix Brief برای Coding Agent) و `approval_status` هستند. فراخوانی از MCP به `POST /api/tools/:name` کنسول می‌رود؛ این مسیر در کنسول فعلی هنوز پیاده‌سازی نشده است.
+عامل فقط **پیشنهاد** می‌دهد. ابزارهای تغییردهنده (مثل استقرار یا ری‌استارت) فقط کارت تأیید می‌سازند، و تأیید فقط در مرورگر، در کنسول سُکان انجام می‌شود. توکن عامل نمی‌تواند تأیید کند.
 
-## محدودیت‌ها
+## سُکان چه کارهایی را انجام نمی‌دهد
 
-منبع این جدول `packages/liara-client/src/limits.ts` است. همین متن‌ها به کاربر نمایش داده می‌شوند.
-
-| قابلیت | محدودیت لیارا | راه‌حل سُکان |
+| کار | دلیل | چه کنی |
 |---|---|---|
-| شارژ حساب و پرداخت | API عمومی برای شارژ وجود ندارد | محاسبه‌ی کسری موجودی، نمایش لینک کنسول و بررسی مجدد موجودی |
-| تغییر NameServer در ایرنیک | ایرنیک API عمومی و احراز هویت‌شده ندارد | چک‌لیست با مقادیر قابل کپی و پایش انتشار NS از طریق Zone در سرویس DNS |
-| اتصال اولیه‌ی GitHub | در OpenAPI فقط خواندن وضعیت اتصال هست | آپلود مستقیم سورس، یا تولید workflow برای GitHub Actions با `@liara/cli` |
-| متریک سطح درخواست (p95 و خطای ۵xx) | API فقط CPU، حافظه، شبکه و دیسک می‌دهد | پروب HTTP مستقل و تحلیل لاگ‌های دسترسی |
-| هشدار و Webhook بومی | اندپوینتی در OpenAPI دیده نشد | پایش دوره‌ای با متریک، رویدادها و پروب خارجی |
-| Rollback با فراخوانی اختصاصی | اندپوینت جدا برای بازگشت وجود ندارد | ایجاد ریلیز جدید با منبع یا تصویر نسخه‌ی سالم قبلی؛ باید با تست زنده تأیید شود |
+| شارژ حساب و پرداخت | API عمومی برای شارژ نیست | کسری را سُکان نشان می‌دهد؛ شارژ را در کنسول لیارا انجام بده |
+| تغییر NS دامنه در ایرنیک | ایرنیک API عمومی ندارد | NSها را کپی کن و در nic.ir بگذار |
+| اتصال اولیه‌ی GitHub | OpenAPI فقط وضعیت اتصال را می‌خواند | سورس را مستقیم دیپلوی کن |
+| متریک سطح درخواست (p95 و خطای ۵xx از خود لیارا) | API لیارا فقط CPU، حافظه، شبکه و دیسک می‌دهد | سُکان از پروب HTTP خودش و لاگ دسترسی استفاده می‌کند |
+| هشدار (Alert) و Webhook بومی | در OpenAPI دیده نشد | پایش دوره‌ای توسط سُکان |
+| Rollback با یک فراخوانی | اندپوینت اختصاصی نیست | ریلیز جدید با تصویر نسخه‌ی قبلی (createRelease) |
 
-**شبیه‌سازی:** در حالت محلی، دیپلوی و تغییرات روی فرآیند `chaos-shop` انجام می‌شوند، نه روی لیارا. نتیجه‌های آن برای نمایش سناریوهاست و جای تست زنده را نمی‌گیرد.
+**آزمایش زنده:** هیچ‌کدام از اندپوینت‌ها هنوز روی حساب واقعی لیارا آزمایش نشده‌اند. بیشترین شک را به دو مورد داریم: مسیر v1 لاگ (`GET /v1/projects/{name}/logs`) و بازگشت به ریلیز قبلی. جزئیات در [ماتریس API](packages/liara-client/docs/api-matrix.md) است.
 
-**تأیید نشده با API زنده:** endpointهای `build-logs`، `GET /v1/releases/{id}`، `cancel` و `update-port` فقط در کد CLI رسمی دیده شده‌اند و در OpenAPI نیستند. مسیر `logs` در OpenAPI با `v1` و پارامتر `since` است، در حالی که CLI از `v2` با `start` استفاده می‌کند. هیچ‌یک از این‌ها با توکن زنده آزموده نشده‌اند.
+## امنیت
 
-## وضعیت پیاده‌سازی
+- کلید لیارا فقط در فایلی با مجوز ۶۰۰ ذخیره می‌شود (`~/.sokan/credentials.json` در CLI و `.sokan/credentials.json` در کنسول). هرگز در صفحه، لاگ یا پاسخ API نمایش داده نمی‌شود.
+- هر تأیید به پارامترهای دقیق همان کارت گره خورده است. اگر پارامترها عوض شوند، اجرا متوقف می‌شود.
+- توکن عامل (MCP) فقط پیشنهاد می‌دهد و نمی‌تواند تأیید کند. تأیید فقط در مرورگر، با کوکی و هدر CSRF، ممکن است.
+- کنسول فقط روی `127.0.0.1` گوش می‌دهد. هدر Host بررسی می‌شود و هر درخواست API به توکن نیاز دارد.
+- خروجی‌ها و لاگ‌ها پیش از نمایش، اسرار (کلیدها و مقدارهای متغیرهای محرمانه) را پوشانده می‌کنند.
 
-| قابلیت | وضعیت | یادداشت |
-|---|---|---|
-| کلاینت API لیارا با خطای سه‌بخشی و retry فقط برای GET | پیاده‌شده | `packages/liara-client`، تست واحد دارد؛ تست زنده ندارد |
-| بسته‌بندی سورس `.tar.gz` (حذف `node_modules`، `.git`، `.env*`) | پیاده‌شده | `packSource`؛ تست زنده ندارد |
-| زنجیره‌ی deploy در کلاینت (سورس، ریلیز، پایش بیلد) | پیاده‌شده در کلاینت | از کنسول هنوز صدا زده نمی‌شود |
-| سطوح ریسک، توکن HMAC یک‌بارمصرف، تایپ نام و پنجره‌ی لغو L3 | پیاده‌شده | `packages/policy` |
-| ممیزی زنجیره‌ای HMAC و ذخیره‌ی روی فایل | پیاده‌شده | `AuditLedger` با `filePath`؛ کلید از `SOKAN_SECRET` |
-| سانسور راز (Redactor) | پیاده‌شده | `packages/policy`؛ هنوز روی همه‌ی خروجی‌های کنسول اعمال نشده |
-| تحلیل پروژه و پیشنهاد سه پلن | پیاده‌شده | `packages/analyzer` |
-| پارس لاگ، ۱۵ runbook، امتیازدهی، Fix Brief | پیاده‌شده | `packages/diagnostics` |
-| راستی‌آزمایی قبل و بعد از اقدام | پیاده‌شده | `takeSnapshot` و `verify`؛ کنسول هنوز آن‌ها را فراخوانی نمی‌کند |
-| کلاینت LLM، tool-calling و مسیریاب | پیاده‌شده | `packages/llm`؛ کنسول هنوز به آن وصل نیست |
-| سرور MCP روی stdio | پیاده‌شده | کارکرد کامل نیازمند `POST /api/tools/:name` در کنسول است |
-| کنسول وب فارسی، SSE، کارت تأیید، تب سناریوهای دمو | شبیه‌سازی محلی | `apps/web` |
-| اپ دمو با ۶ حالت خرابی | پیاده‌شده | `demo/chaos-shop`: نبود `DATABASE_URL`، نشت حافظه با OOM، CPU، upstream کند، N+1، پورت اشتباه |
-| احراز هویت کنسول (توکن، Origin، CSRF، bind روی `127.0.0.1`) | در حال انجام | کد فعلی بدون توکن و روی `0.0.0.0` است |
-| اجرای زنده‌ی اقدامات از کنسول (restart، envs، resize، deploy) | در حال انجام | کد فعلی متدهای کلاینت را صدا نمی‌زند |
-| گفت‌وگوی LLM در کنسول | در حال انجام | بسته‌ی `packages/llm` آماده است |
-| Health Watch زمان‌بندی‌شده | آینده | ساخته نشده |
-| ویزارد گام‌به‌گام دامنه، ایرنیک و SSL | آینده | فقط متدهای کلاینت دامنه و DNS وجود دارد |
-| اتصال GitHub از طریق سُکان | آینده | API فقط خواندن وضعیت را می‌دهد |
-| Rollback اختصاصی | آینده | فعلاً فقط با ایجاد ریلیز جدید ممکن است و تأیید زنده ندارد |
+## برای داوران و توسعه‌دهندگان
 
-## مستندات بیشتر
-
-- [وایت‌پیپر طراحی](docs/WHITEPAPER-v1.md): هدف و قواعد طراحی.
-- [مستندات معماری](docs/ARCHITECTURE.md): معماری و مرزهای سیستم.
-- [گزارش داوری](docs/EVALUATION.md): ارزیابی مستقل نسخه‌ی قبلی و فهرست شکاف‌ها.
-- [ماتریس APIهای لیارا](packages/liara-client/docs/api-matrix.md): نگاشت endpoint به ابزار و منبع.
-- [پژوهش NotebookLM](research/README.md): ابزار آماده‌سازی پایگاه دانش (خارج از محصول).
+- معماری: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- طرح کامل: [docs/WHITEPAPER-v1.md](docs/WHITEPAPER-v1.md)
+- ارزیابی و یافته‌های داوران: [docs/EVALUATION.md](docs/EVALUATION.md)
+- ماتریس تطبیق APIهای لیارا: [packages/liara-client/docs/api-matrix.md](packages/liara-client/docs/api-matrix.md)
+- کنسول پیشرفته و سناریوهای دمو: `http://127.0.0.1:4000/advanced` (با توکن). سناریوها با `POST /api/demo/<نام>` اجرا می‌شوند: `scenario-1-deploy`، `scenario-2-error500`، `scenario-3-leak`، `scenario-4-cpu`، `scenario-5-upstream`، `scenario-6-wrong-port` و `scenario-reset`.
+- تست‌ها: `npm test` (بیلد و ۳۵۲ تست؛ همه سبز).
+- وضعیت: مخزن با حالت شبیه‌سازی (`chaos-shop`) آزمایش شده است. اقدامات زنده بر پایه‌ی OpenAPI ساخته شده‌اند و هنوز روی حساب لیارای واقعی آزمایش نشده‌اند.
+- دستورهای CLI: `sokan` (استقرار)، `sokan status`، `sokan logs`، `sokan fix`، `sokan domain <نام> [--check]`، `sokan ui`، `sokan mcp`، `sokan login` و `sokan logout`.
 
 </div>

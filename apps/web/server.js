@@ -59,8 +59,10 @@ function serveStatic(req, res, url) {
     return sendJson(res, 405, { error: "METHOD_NOT_ALLOWED" });
   }
   if (url.searchParams.get("t") === token) {
+    // Keep /advanced when the token link points there; anything else lands on the Simple page.
+    const dest = url.pathname === "/advanced" || url.pathname === "/advanced/" ? url.pathname : "/";
     res.writeHead(302, {
-      Location: "/",
+      Location: dest,
       "Set-Cookie": `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/`,
       "Cache-Control": "no-store",
     });

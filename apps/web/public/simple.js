@@ -19,6 +19,17 @@
   var stage = document.getElementById('stage');
   var stepper = document.getElementById('stepper');
   var simBanner = document.getElementById('simBanner');
+  var auditBanner = document.getElementById('auditBanner');
+  // Incident status labels from the diagnostics contract (IncidentStatus).
+  var INCIDENT_FA = {
+    investigating: 'در حال بررسی',
+    diagnosed: 'تشخیص داده شد',
+    awaiting_approval: 'منتظر تأیید',
+    remediating: 'در حال رفع',
+    resolved: 'حل شد',
+    mitigated: 'موقتاً مهار شد',
+    unresolved: 'حل نشد',
+  };
   var footer = document.getElementById('footer');
   var dlg = document.getElementById('confirmDlg');
 
@@ -223,6 +234,7 @@
   function chrome(s) {
     var live = !!(s && (s.connected || s.mode === 'simulated'));
     simBanner.hidden = !(s && s.mode === 'simulated');
+    auditBanner.hidden = !(s && s.auditOk === false);
     footer.hidden = !live;
   }
 
@@ -434,7 +446,10 @@
         spellcheck: 'false',
         placeholder: e.hasValue ? 'بدون تغییر' : '',
       });
-      var badge = (e.hasValue || e.fromDotEnv) ? h('span', { class: 'badge ok', text: 'از فایل .env خوانده شد ✓' }) : null;
+      // Only a value read from the project's .env gets the .env note; a value saved from this form says so.
+      var badge = e.fromDotEnv
+        ? h('span', { class: 'badge ok', text: 'از فایل .env خوانده شد ✓' })
+        : (e.hasValue ? h('span', { class: 'badge ok', text: 'ذخیره شد ✓' }) : null);
       return {
         key: e.key,
         el: h('div', { class: 'field' },
@@ -799,6 +814,7 @@
     state.job = null;
     if (!d.ok) return viewFailed(d, kind);
     if (kind === 'fix') {
+      if (d.outcome === 'mitigated') return viewMitigated(d);
       if (d.verification && d.verification.passed === false) return viewFailed(d, kind);
       return viewFixed(d);
     }
@@ -853,6 +869,21 @@
       kids.push(notice('ok', 'قبل و بعد', d.verification.summary_fa, ''));
     }
     kids.push(h('button', { type: 'button', class: 'btn primary', text: 'سایتم را ببینم', onclick: function () { reloadRoute(); } }));
+    setView(card.apply(null, kids));
+  }
+
+  /** The restart held, but the leak is still in the code: say so, and hand over the Fix Brief. */
+  function viewMitigated(d) {
+    setStep(0);
+    var kids = [
+      h('h2', { text: 'موقتاً مهار شد' }),
+      h('p', { class: 'lead', text: d.message_fa || '' }),
+    ];
+    if (d.verification && d.verification.summary_fa) {
+      kids.push(notice('warn', 'قبل و بعد', d.verification.summary_fa, ''));
+    }
+    if (d.fixBriefMarkdown) kids.push(copyBtn(d.fixBriefMarkdown, 'برای Cursor/Claude کپی کن', 'btn primary'));
+    kids.push(h('button', { type: 'button', class: 'btn ghost', text: 'سایتم را ببینم', onclick: function () { reloadRoute(); } }));
     setView(card.apply(null, kids));
   }
 
@@ -1010,6 +1041,9 @@
   function renderDiagnosis(box, d) {
     var kids = [];
     var brief = d.fixBriefMarkdown || '';
+    if (d.incidentStatus && INCIDENT_FA[d.incidentStatus]) {
+      kids.push(h('p', { class: 'muted small', text: 'وضعیت: ' + INCIDENT_FA[d.incidentStatus] }));
+    }
     if (d.found) {
       kids.push(h('div', { class: 'diag' },
         h('p', { class: 'diag-label', text: 'مشکل' }),

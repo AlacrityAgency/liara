@@ -59,10 +59,12 @@ async function startTarget(core, envs, port = core.app.basePort) {
   return waitHealthy(core);
 }
 
+/** Harness restarts of the demo target are not deploys: kind "restart" (EVALUATION R4). */
 function recordRelease(core, state) {
   const now = new Date().toISOString();
   core.addRelease({
     id: `rel_${crypto.randomBytes(3).toString("hex")}`,
+    kind: "restart",
     state,
     createdAt: now,
     finishedAt: now,

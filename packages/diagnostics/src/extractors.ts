@@ -1,5 +1,5 @@
-import type { Signal, SignalKind, EvidenceRef } from "@sokan/contracts";
-import type { CollectedEvidence, DiagSignalKind, Thresholds } from "./types";
+import type { Signal, EvidenceRef } from "@sokan/contracts";
+import type { CollectedEvidence, Thresholds } from "./types";
 import { DEFAULT_THRESHOLDS } from "./types";
 import { linearRegression, percentile } from "./stats";
 import { clusterErrors } from "./logparse";
@@ -85,8 +85,7 @@ export function extractSignals(
   const nowTs = new Date().toISOString();
   const logs = data.logs ?? [];
   const applets = data.applets ?? [];
-  // The only place where a diagnostics-only kind (ExtraSignalKind) is narrowed to the contract type.
-  const add = (s: Omit<Signal, "kind"> & { kind: DiagSignalKind }) => signals.push({ ...s, kind: s.kind as SignalKind });
+  const add = (s: Signal) => signals.push(s);
 
   // 2. OOM_KILLED: an applet reason, an OOM log line, or an exit event that names OOMKilled / exit code 137
   const oomApplets = applets.filter(

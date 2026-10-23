@@ -134,8 +134,12 @@ function simulatedLiara(core) {
 
 // ---------- project ----------
 
-const RESERVED_ENV = new Set(["PORT", "NODE_ENV"]);
-const isUserEnvKey = (key) => ENV_KEY_RE.test(key) && !key.startsWith("CHAOS_") && !key.startsWith("DEBUG_") && !RESERVED_ENV.has(key);
+// Names the platform, the shell or Sokan itself sets: never asked for in the project form.
+const RESERVED_ENV = new Set(["PORT", "NODE_ENV", "HOME", "PATH", "USER", "SHELL", "PWD", "LANG", "TERM", "TMPDIR"]);
+const RESERVED_PREFIX = ["CHAOS_", "DEBUG_", "SOKAN_", "LIARA_", "NPM_", "NODE_"];
+const isUserEnvKey = (key) => ENV_KEY_RE.test(key)
+  && !RESERVED_PREFIX.some((p) => key.startsWith(p))
+  && !RESERVED_ENV.has(key);
 
 /** Liara app name: lowercase a-z0-9-, starts with a letter, 3 to 32 characters, no trailing dash. */
 function sanitizeAppName(raw) {
@@ -237,7 +241,7 @@ async function buildProject(core, dir) {
     platform,
     platformLabel_fa: label,
     port,
-    summary_fa: `یک سایت ${label} پیدا کردم. روی پورت ${faNum(port)} اجرا می‌شود.`,
+    summary_fa: `یک سایت ${label} پیدا کردم. روی پورت ${fa(port)} اجرا می‌شود.`,
     appName: sanitizeAppName(readPkgName(dir) || path.basename(dir)),
     keys,
     dotEnvKeys: new Set(dotEnv.keys()),
@@ -405,7 +409,7 @@ function postDisconnect(core) {
 
 async function session(core) {
   const s = state(core);
-  const body = { ok: true, connected: core.liara.isLive, mode: modeOf(core) };
+  const body = { ok: true, connected: core.liara.isLive, mode: modeOf(core), auditOk: core.auditOk() };
   if (core.liara.isLive) {
     const account = await accountView(core).catch(() => null);
     if (account) body.account = account;
@@ -823,6 +827,8 @@ function fromLiaraError(core, error) {
   };
 }
 
+const MITIGATED_TEXT = "موقتاً درست شد؛ راه‌حل اصلی در کد است — Fix Brief را به Cursor/Claude بده";
+
 function fixMessage(out) {
   const v = out.verification;
   const check = v && Array.isArray(v.checks)
@@ -847,7 +853,18 @@ async function runFix(core, id, jobId) {
   }
   if (out.resolved) {
     progress(core, jobId, "done", 100, "درست شد");
-    finish(core, jobId, true, fixMessage(out), { ...(verification ? { verification } : {}) });
+    finish(core, jobId, true, fixMessage(out), { outcome: "resolved", ...(verification ? { verification } : {}) });
+    return;
+  }
+  if (out.outcome === "mitigated") {
+    // The restart only relieves the symptom; the real fix is in the code, so the user gets the Fix Brief.
+    const brief = core.state.fixBrief ? core.redact(fixBriefToMarkdown(core.state.fixBrief)) : undefined;
+    progress(core, jobId, "done", 100, "موقتاً مهار شد");
+    finish(core, jobId, true, MITIGATED_TEXT, {
+      outcome: "mitigated",
+      ...(verification ? { verification } : {}),
+      ...(brief ? { fixBriefMarkdown: brief } : {}),
+    });
     return;
   }
   progress(core, jobId, "failed", 100, "هنوز درست نشده");
@@ -949,8 +966,10 @@ async function diagnose(core, body) {
   const confident = !!top && (top.confidence === "high" || top.confidence === "medium");
   if (!confident) {
     for (const id of created) core.approvals.cancel(id);
+    if (incident && incident.status === "awaiting_approval") incident.status = "diagnosed";
     return good({
       found: false,
+      incidentStatus: incident?.status,
       problem_fa: "با اطلاعات فعلی نتوانستم علت قطعی را پیدا کنم.",
       solution_fa: "متن راهنما را برای Cursor یا Claude کپی کنید، یا لاگ‌ها را ببینید.",
       fixBriefMarkdown: brief,
@@ -969,6 +988,7 @@ async function diagnose(core, body) {
   const confirm = first && first.status === "pending" ? confirmView(core, first) : undefined;
   return good({
     found: true,
+    incidentStatus: incident?.status,
     problem_fa,
     solution_fa,
     ...(confirm ? { confirm } : {}),

@@ -169,7 +169,10 @@
     app_delete: 'حذف اپ',
   };
   const APP_STATUS_FA = { running: 'در حال اجرا', stopped: 'متوقف', deploying: 'در حال استقرار', unknown: 'نامشخص' };
-  const INC_STATUS_FA = { investigating: 'در حال بررسی', awaiting_approval: 'منتظر تأیید', remediating: 'در حال رفع', resolved: 'حل شد', unresolved: 'حل نشد' };
+  const INC_STATUS_FA = {
+    investigating: 'در حال بررسی', diagnosed: 'تشخیص داده شد', awaiting_approval: 'منتظر تأیید', remediating: 'در حال رفع',
+    resolved: 'حل شد', mitigated: 'موقتاً مهار شد', unresolved: 'حل نشد',
+  };
   const CONF_FA = { high: 'بالا', medium: 'متوسط', low: 'پایین' };
   const EV_TYPE_FA = { log: 'لاگ', metric: 'متریک', event: 'رویداد', release: 'ریلیز', applet: 'اپلت', probe: 'پروب' };
   const TIER_FA = { economy: 'اقتصادی', economic: 'اقتصادی', recommended: 'پیشنهادی', scalable: 'مقیاس‌پذیر' };
@@ -260,6 +263,7 @@
     if (!st) { box.append(chip('plain', 'در حال بارگذاری…')); return; }
     box.append(st.mode === 'simulated' ? chip('warn', 'حالت شبیه‌سازی') : chip('ok', 'live · متصل به لیارا'));
     if (st.isEphemeralSecret) box.append(chip('warn', 'کلید تأیید موقت است؛ با ری‌استارت سرور تأییدها باطل می‌شوند'));
+    if (st.auditOk === false) box.append(chip('bad', 'هشدار: زنجیره‌ی ممیزی شکسته است؛ دفتر ممیزی را بررسی کنید'));
     if (st.llm && st.llm.configured === false) box.append(chip('warn', 'بدون LLM — مسیریاب آفلاین'));
     const app = st.app || {};
     box.append(chip(appKind(app.status), `اپ: ${APP_STATUS_FA[app.status] || 'نامشخص'}`));
@@ -643,7 +647,7 @@
     if (!inc) {
       box.append(el('div', { class: 'empty', text: 'هنوز حادثه‌ای ثبت نشده است. از گفتگو بپرسید «چرا کنده؟» یا یکی از سناریوهای دمو را اجرا کنید.' }));
     } else {
-      const kind = { resolved: 'ok', unresolved: 'bad', remediating: 'info', awaiting_approval: 'warn' }[inc.status] || 'plain';
+      const kind = { resolved: 'ok', mitigated: 'warn', unresolved: 'bad', remediating: 'info', diagnosed: 'info', awaiting_approval: 'warn' }[inc.status] || 'plain';
       box.append(el('section', { class: 'card' },
         el('div', { class: 'row between wrap' }, el('h3', { text: 'خلاصه' }), chip(kind, INC_STATUS_FA[inc.status] || 'نامشخص')),
         rich(inc.symptom || '—'),
@@ -653,7 +657,7 @@
         const v = inc.verification;
         box.append(el('section', { class: 'card' },
           el('h3', { text: 'نتیجه‌ی راستی‌آزمایی' }),
-          el('p', {}, `وضعیت: ${v.verdict === 'resolved' ? 'حل شد' : v.verdict === 'partial' ? 'بخشی حل شد' : v.verdict === 'worse' ? 'بدتر شد' : v.verdict || '—'}`),
+          el('p', {}, `وضعیت: ${inc.status === 'mitigated' ? 'موقتاً مهار شد؛ راه‌حل اصلی در کد است (Fix Brief)' : v.verdict === 'resolved' ? 'حل شد' : v.verdict === 'partial' ? 'بخشی حل شد' : v.verdict === 'worse' ? 'بدتر شد' : v.verdict || '—'}`),
           el('p', { class: 'muted', dir: 'ltr', text: `خطای پیش از اقدام: ${fmtInt(v.before?.errorsPerMinute ?? '—')} در دقیقه · بعد: ${fmtInt(v.after?.errorsPerMinute ?? '—')} در دقیقه` })));
       }
 

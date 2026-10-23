@@ -90,6 +90,7 @@ function simulatedEvidence(core, windowStart) {
     events: core.events.filter((e) => inWindow(e.ts)).map((e) => ({ id: e.id, ts: e.ts, type: e.type, message: e.message })),
     releases: core.releases.map((r) => ({
       id: r.id, state: r.state, createdAt: r.createdAt, finishedAt: r.finishedAt, envKeys: r.envKeys, message: r.message, source: "local",
+      kind: r.kind || "release",
     })),
     // RSS of one process: from /health probes and the [mem] log lines, whichever generation has most points.
     memory: mostPointsGeneration([
@@ -189,6 +190,7 @@ async function liveEvidence(core, windowStart) {
         finishedAt: r.finishedAt ? String(r.finishedAt) : undefined,
         message: r.failReason ? core.redact(r.failReason) : undefined,
         source: "liara",
+        kind: "release",
       }))
     : null;
   const memPoints = reportPoints(pick(4), (v) => (v > 1e7 ? v / 1048576 : v));
@@ -234,9 +236,9 @@ async function collectEvidence(core, { windowStart, probePaths = [] }) {
 }
 
 /** Snapshot of the system for before/after comparison (WHITEPAPER §8.6). */
-async function snapshot(core, windowStart, probePaths) {
+async function snapshot(core, windowStart, probePaths, { underLoad = false } = {}) {
   const evidence = await collectEvidence(core, { windowStart, probePaths });
-  return { evidence, snapshot: takeSnapshot(evidence, probePaths) };
+  return { evidence, snapshot: takeSnapshot(evidence, probePaths, { underLoad }) };
 }
 
 module.exports = { collectEvidence, snapshot, livePlans };

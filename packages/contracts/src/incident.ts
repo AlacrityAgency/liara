@@ -28,7 +28,11 @@ export type SignalKind =
   | "TRAFFIC_SPIKE"
   | "APP_STOPPED"
   | "DB_POOL_EXHAUSTED"
-  | "CACHE_UNREACHABLE";
+  | "CACHE_UNREACHABLE"
+  | "PORT_CONFLICT"
+  | "TLS_ERROR"
+  | "BUILD_ERROR"
+  | "PROXY_UPSTREAM_DOWN";
 
 export interface Signal {
   kind: SignalKind;
@@ -50,11 +54,14 @@ export interface InstructionFlag {
 /** Machine-checkable success criterion evaluated by the verifier (WHITEPAPER §8.6). */
 export type SuccessCriterion =
   | { kind: "probe_ok"; path: string }
+  /** Any answer below 500 means the app is reachable through the proxy (port and proxy problems). Status 0 or null fails. */
+  | { kind: "probe_not_5xx"; path: string }
   | { kind: "probe_latency_below"; path: string; ms: number }
   | { kind: "no_error_signature"; signature: string }
   | { kind: "error_rate_below"; perMin: number }
   | { kind: "mem_below_pct"; pct: number }
-  | { kind: "cpu_below_pct"; pct: number }
+  /** underLoad: the samples must be taken while requests are driven at the failing path (a CPU hot path). */
+  | { kind: "cpu_below_pct"; pct: number; underLoad?: boolean }
   | { kind: "disk_used_below"; pct: number }
   | { kind: "applets_running" }
   | { kind: "restarts_stable" }
@@ -113,7 +120,14 @@ export interface Snapshot {
   cpuPct: number | null;
 }
 
-export type IncidentStatus = "investigating" | "awaiting_approval" | "remediating" | "resolved" | "unresolved";
+export type IncidentStatus =
+  | "investigating"
+  | "diagnosed"
+  | "awaiting_approval"
+  | "remediating"
+  | "resolved"
+  | "mitigated"
+  | "unresolved";
 
 export interface Incident {
   id: string;

@@ -190,8 +190,7 @@ export class DiagnosticEngine {
       hypotheses,
       rejected,
       actions: [],
-      // DiagIncidentStatus adds "diagnosed" and "mitigated" to the contract; see types.ts.
-      status: status as IncidentStatus,
+      status,
     };
   }
 
