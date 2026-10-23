@@ -2182,3 +2182,148 @@ code {
 .app-info-left {
   flex: 1 1 220px;
 }
+
+/* ==========================================================================
+   Plan Recommendation Comparison Cards (§8.3)
+   ========================================================================== */
+.plans-recommendation-wrapper {
+  background: var(--surface-2);
+  border: 1px solid var(--border-glow);
+  border-radius: var(--radius-lg);
+  padding: 1rem;
+  margin: 0.75rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  animation: fadeInSlide 0.3s ease;
+}
+.plans-rec-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.plans-rec-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--mint);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.plans-rec-sub {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+.plans-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+@media (max-width: 768px) {
+  .plans-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.plan-card-item {
+  position: relative;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  transition: all 0.2s ease;
+}
+.plan-card-item:hover {
+  border-color: var(--cyan);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+.plan-card-item.recommended {
+  border-color: var(--mint);
+  background: linear-gradient(180deg, rgba(135, 252, 196, 0.05) 0%, var(--surface-1) 100%);
+}
+.plan-ribbon {
+  position: absolute;
+  top: -8px;
+  left: 10px;
+  background: var(--brand-grad);
+  color: var(--brand-ink);
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+.plan-item-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--text);
+  margin-top: 0.2rem;
+}
+.plan-item-id code {
+  font-size: 0.72rem;
+  color: var(--cyan);
+  background: rgba(0, 229, 255, 0.08);
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius-sm);
+}
+.plan-item-specs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem;
+  font-size: 0.75rem;
+}
+.plan-item-specs .spec-row {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-muted);
+}
+.plan-item-specs .spec-row strong {
+  color: var(--text);
+}
+.plan-item-price {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin-top: auto;
+}
+.plan-item-price .price-val {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--cyan);
+}
+.plan-item-price .price-unit {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.btn-select-plan {
+  width: 100%;
+  justify-content: center;
+  font-size: 0.78rem;
+  padding: 0.45rem;
+}
+
+/* Pipeline Stepper Dynamic State */
+.step-item.running .step-circle {
+  border-color: var(--cyan);
+  background: rgba(0, 229, 255, 0.2);
+  color: var(--cyan);
+  animation: pulseRotate 1.2s infinite ease-in-out;
+}
+.step-item.completed .step-circle {
+  background: var(--mint);
+  border-color: var(--mint);
+  color: var(--brand-ink);
+}
+@keyframes pulseRotate {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(0, 229, 255, 0.4); }
+  50% { transform: scale(1.1); box-shadow: 0 0 0 8px rgba(0, 229, 255, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(0, 229, 255, 0); }
+}
+

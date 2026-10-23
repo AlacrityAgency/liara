@@ -214,8 +214,8 @@
             </button>
           </div>
 
-          <button class="btn btn-create-app">
-            <span>+ ایجاد برنامه</span>
+          <button class="btn btn-create-app btn-new-app" onclick="runScenario('deploy')">
+            <span>+ ایجاد برنامه جدید</span>
           </button>
         </div>
       </div>
@@ -353,6 +353,8 @@
                       <button class="chip-btn" data-prompt="این پروژه رو تحلیل و دیپلوی کن"><svg class="ico" aria-hidden="true"><use href="#i-rocket"/></svg>تحلیل و اولین دیپلوی</button>
                       <button class="chip-btn" data-prompt="سایتم خطای ۵۰۰ میده، بررسی کن"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg>عارضه‌یابی خطای ۵۰۰</button>
                       <button class="chip-btn" data-prompt="سایت کند شده و مصرف رم بالاست"><svg class="ico" aria-hidden="true"><use href="#i-trending"/></svg>بررسی نشت حافظه و OOM</button>
+                      <button class="chip-btn" data-prompt="چطور دامنه ir از ایرنیک وصل کنم؟"><svg class="ico" aria-hidden="true"><use href="#i-globe"/></svg>راهنمای دامنه و ایرنیک</button>
+                      <button class="chip-btn" data-prompt="موجودی حسابم چقدره و چطور شارژ کنم؟"><svg class="ico" aria-hidden="true"><use href="#i-credit-card"/></svg>شارژ و امور مالی</button>
                       <button class="chip-btn" data-prompt="اپلیکیشن رو حذف کن"><svg class="ico" aria-hidden="true"><use href="#i-shield-alert"/></svg>تست تأیید دومرحله‌ای L3</button>
                     </div>
                   </div>
@@ -416,26 +418,30 @@
                 <!-- Tab 2: Live Log Stream & Build Pipeline (§8.4) -->
                 <div id="tab-logs" class="tab-pane">
                   <!-- Build Steps Timeline (§8.4, §12.1) -->
-                  <div class="build-pipeline-stepper">
-                    <div class="step-item completed">
+                  <div class="build-pipeline-stepper pipeline-steps" id="buildPipelineStepper">
+                    <div class="step-item step completed" id="pipeStep1" data-step="1">
                       <span class="step-circle"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg></span>
                       <span class="step-label">تحلیل پروژه</span>
                     </div>
-                    <div class="step-line active"></div>
-                    <div class="step-item active">
-                      <span class="step-circle"><svg class="ico" aria-hidden="true"><use href="#i-zap"/></svg></span>
+                    <div class="step-line completed" id="pipeLine1"></div>
+                    <div class="step-item step completed" id="pipeStep2" data-step="2">
+                      <span class="step-circle"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg></span>
                       <span class="step-label">ایجاد کانتینر</span>
                     </div>
-                    <div class="step-line"></div>
-                    <div class="step-item">
-                      <span class="step-circle">۳</span>
+                    <div class="step-line completed" id="pipeLine2"></div>
+                    <div class="step-item step completed" id="pipeStep3" data-step="3">
+                      <span class="step-circle"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg></span>
                       <span class="step-label">تزریق متغیرها</span>
                     </div>
-                    <div class="step-line"></div>
-                    <div class="step-item">
-                      <span class="step-circle">۴</span>
+                    <div class="step-line completed" id="pipeLine3"></div>
+                    <div class="step-item step completed" id="pipeStep4" data-step="4">
+                      <span class="step-circle"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg></span>
                       <span class="step-label">راستی‌آزمایی پروب</span>
                     </div>
+                  </div>
+                  <div id="pipelineStatusBanner" class="pipeline-status-banner" style="font-size: 0.78rem; color: var(--mint); background: rgba(135,252,196,0.08); border: 1px solid rgba(135,252,196,0.2); border-radius: var(--radius-sm); padding: 0.4rem 0.75rem; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+                    <svg class="ico" aria-hidden="true"><use href="#i-check-circle"/></svg>
+                    <span id="pipelineStatusText">آخرین ریلیز (rel_current) پایدار و آماده بهره‌برداری است.</span>
                   </div>
 
                   <div class="log-controls">

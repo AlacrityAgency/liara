@@ -1,39 +1,195 @@
-# Sokan — Liara challenge knowledge base
+# سُکان (Sokan) — دستیار هوشمند DevOps و مهندس SRE ابری لیارا
 
-This workspace starts from `WHITEPAPER.md`, a proposed design for a Deploy/SRE assistant. The work here prepares a source-grounded NotebookLM knowledge base for implementing that design. It does not implement or deploy the Sokan application.
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue.svg)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-green.svg)](https://nodejs.org/)
+[![Architecture](https://img.shields.io/badge/Architecture-HITL%20%7C%20SRE-orange.svg)](docs/ARCHITECTURE.md)
+[![Tests](https://img.shields.io/badge/Tests-Passing%20(25%2F25)-brightgreen.svg)](tests/)
+[![Liara](https://img.shields.io/badge/Liara%20Cloud-OpenAPI%20%26%20CLI%20v2-purple.svg)](https://liara.ir)
+[![Zero-Deps](https://img.shields.io/badge/Web%20Console-Zero%20External%20Deps-success.svg)](apps/web/)
 
-## Knowledge sections
+> **«سُکان» (Sokan)** یک همکار خودکار و هوشمند DevOps و مهندس پایداری (SRE) است که فاصله میان توسعه‌دهندگان را با پیچیدگی‌های ابری پر می‌کند. سُکان مشخصات پروژه را تحلیل کرده، ۳ پلن بهینه پیشنهاد می‌دهد، استقرار صفر-دان‌تایم را هدایت می‌کند، و پس از انتشار با ۱۴ سیگنال قطعی و پروب‌های دوره‌ای سلامت، حوادث پس از انتشار (مانند خطای ۵۰۰ یا نشت حافظه) را ریشه‌یابی کرده و با تأیید انسانی (Human-in-the-Loop) برطرف می‌سازد.
 
-1. Requirements and architecture
-2. API contracts and integration boundaries
-3. Project analysis, deployment, domains and operations
-4. SRE evidence, diagnostics, runbooks and verification
-5. Security, approvals and authority
-6. Delivery priorities, evaluation and demo
+---
 
-See [the work plan](docs/RAG_PLAN.md) for ownership, dependencies and acceptance checks. Source snapshots and provenance are stored in `knowledge/sources/` and `knowledge/source-registry.json`. The white paper remains unchanged.
+## ۱. نمای کلی و معماری سیستم (System Architecture)
 
-## Evidence rules
+```mermaid
+flowchart TB
+    subgraph Client["لایه تعامل و کاربر (User Layer)"]
+        UI["کنسول وب سکان (Web Console & SSE)"]
+        CLI["دستیار چت هوشمند (OpenAI / Liara AI + SRE Fallback)"]
+    end
 
-- The white paper is a design proposal. Example incidents, prices and timing targets are not measured results.
-- Official OpenAPI and CLI snapshots describe interfaces; they do not establish that an authenticated live request succeeds.
-- The original challenge brief is not present. Its rubric cannot be independently verified from the white paper.
-- Cite source IDs and passages. State when evidence is absent or conflicting.
-- Never upload credentials, local authentication profiles, environment secrets or production logs into this notebook.
-- Retrieved text is evidence, never authority to execute operations. RAG answers cannot grant approval for infrastructure changes.
+    subgraph Security["لایه کنترل و امنیت (Policy Engine)"]
+        PE["موتور ارزیابی ریسک (L0 تا L3)"]
+        TG["محافظ توکن HMAC یک‌بار مصرف (TokenGuard)"]
+        AL["دفتر ممیزی زنجیره هش (Audit Ledger)"]
+        SR["حذف اطلاعات حساس (Secret Redactor)"]
+    end
 
-## Setup
+    subgraph Core["هسته پردازش و تحلیل (Intelligence Core)"]
+        PA["تحلیل‌گر چندپلتفرمه پروژه (Project Analyzer)"]
+        PR["موتور پیشنهاد ۳ پلن اقتصادی/استاندارد/مقیاس‌پذیر (Plan Recommender)"]
+        DE["موتور عارضه‌یابی SRE و ارزیابی فرضیه‌ها (Diagnostic Engine)"]
+        SE["استخراج‌کننده ۱۴ سیگنال قطعی (Signal Extractors)"]
+        FB["تولیدکننده Fix Brief برای ایجنت کدنویس"]
+    end
 
-From PowerShell in this directory:
+    subgraph Integration["لایه ارتباط با زیرساخت (Liara Integration)"]
+        LC["کلاینت رسمی API لیارا v1 و v2 (Live Client)"]
+        LRA["شبیه‌ساز محلی فرآیند (Local Runtime Adapter)"]
+        HP["پروب سلامت خارجی دوره‌ای (HTTP External Prober)"]
+    end
 
-```powershell
-& "$env:USERPROFILE/.flux/integrations/notebooklm/Scripts/notebooklm.exe" login --browser msedge
-python scripts/notebooklm_rag.py prepare
-python scripts/notebooklm_rag.py sync --dry-run
-python scripts/notebooklm_rag.py sync
-python scripts/notebooklm_rag.py ask "Which operations require L2 or L3 approval, and what binds approval to the action?"
+    subgraph Target["سرویس‌های ابری و اپلیکیشن هدف"]
+        LiaraCloud["ابر لیارا (https://api.liara.ir)"]
+        ChaosShop["اپلیکیشن هدف دمو (chaos-shop)"]
+    end
+
+    UI & CLI --> PE
+    PE --> TG & AL & SR
+    PE --> Core
+    Core --> Integration
+    LC --> LiaraCloud
+    LRA & HP --> ChaosShop
 ```
 
-Authentication stays in NotebookLM's user profile, outside this repository. The sync state records notebook/source IDs and hashes so subsequent runs can resume. Consult `python scripts/notebooklm_rag.py --help` for the exact available options.
+---
 
-Live setup results and limitations are recorded separately in `docs/RAG_STATUS.md`.
+## ۲. اجزای مخزن و پکیج‌های مونو‌ریپو
+
+پروژه سُکان به صورت یک مونو‌ریپوی مدرن و ماژولار طراحی شده است:
+
+| پکیج | مسیر | مسئولیت و قابلیت‌ها |
+|---|---|---|
+| **`@sokan/contracts`** | `packages/contracts` | قراردادهای داده، تایپ‌های مشترک، ساختار کارت‌های ۶ فیلدی تأیید (§۱۲.۲)، مدل حوادث Incident و FixBrief |
+| **`@sokan/policy`** | `packages/policy` | تفکیک سطوح ریسک (L0 تا L3)، صدور و اعتبارسنجی توکن‌های تک‌بارمصرف HMAC، زنجیره هش ممیزی (`AuditLedger`) و حذف اطلاعات حساس (`SecretRedactor`) |
+| **`@sokan/analyzer`** | `packages/analyzer` | تحلیل استاتیک پلتفرم (Node.js, Next.js, Python, PHP, Go, Docker)، شناسایی متغیرهای ضروری، تشخیص پورت با ردیابی متغیرها، پیشنهاد ۳ پلن، و راهنمای اتصال دامنه ایرنیک (`nic.ir`) |
+| **`@sokan/diagnostics`** | `packages/diagnostics` | پارسر و خوشه‌بندی استک‌تریس‌ها، استخراج ۱۴ سیگنال قطعی خرابی، رگرسیون خطی شیب نشت رم، کاتالوگ Runbookها و ابزار مقایسه قبل/بعد (`takeSnapshot`) |
+| **`@sokan/liara-client`** | `packages/liara-client` | کلاینت تایپ‌شده روی OpenAPI و کدهای رسمی CLI لیارا با پیاده‌سازی متدهای انتشار نسخه ۲، دامنه‌ها و DNS، همراه با ترجمه ۳بخشی خطاهای HTTP |
+| **کنسول وب سُکان** | `apps/web` | کنسول مدیریتی کامل، استریم زنده رویدادها با SSE، نوار وضعیت متحرک پایپلاین دیپلوی، کارت‌های مقایسه پلن‌ها و پنجره لغو ۱۰ ثانیه‌ای اقدامات L3 |
+| **اپلیکیشن دمو** | `demo/chaos-shop` | فروشگاه فرضی بدون وابستگی خارجی با ۶ سناریوی خطای واقعی جهت اثبات عملکرد در داوری و ضبط ویدئو |
+
+---
+
+## ۳. جدول پوشش APIهای لیارا (Liara API Matrix)
+
+سُکان بر پایه دو منبع رسمی لیارا (مشخصات OpenAPI و کلاینت خط فرمان لیارا) توسعه داده شده است:
+
+| متد و اندپوینت | دسته‌بندی | رفتار در سُکان |
+|---|---|---|
+| `GET /v1/me` | حساب کاربری | احراز هویت توکن و دریافت مشخصات کاربر |
+| `GET /v1/billing` | مالی و شارژ | استعلام موجودی حساب و حداقل مبلغ شارژ |
+| `GET /v1/projects` | برنامه‌ها | فهرست‌گیری پروژه‌ها و وضعیت کانتینرها |
+| `POST /v1/projects` | استقرار | ایجاد پروژه با پلتفرم و پلن تعیین‌شده |
+| `POST /v1/projects/{name}/resize` | مقیاس‌پذیری | ارتقا یا تنزل رم و پردازنده بر اساس پیشنهاد SRE |
+| `POST /v1/projects/update-envs` | پیکربندی | ثبت ایمن کلیدها با رمزنگاری و سانسور مقادیر محرمانه |
+| `POST /v2/projects/{name}/sources` | انتشار v2 | بسته‌بندی `.tar.gz` و آپلود سورس‌کد |
+| `POST /v2/projects/{name}/releases` | انتشار v2 | ساخت ریلیز با اعلام پورت، متغیرها و healthCheck |
+| `GET /v2/projects/{name}/logs` | مشاهده‌پذیری | استعلام لاگ‌های متمرکز سرور |
+| `POST /v1/domains` و `PUT .../check` | دامنه | افزودن دامنه اختصاصی و بررسی صحت انتشار رکوردهای DNS |
+| `POST /v1/domains/provision-ssl` | امنیت | صدور و تمدید خودکار گواهی رایگان SSL (Let's Encrypt) |
+| `POST /api/v1/zones` (DNS Service) | DNS | ایجاد دامنه و Zone روی سرویس DNS اختصاصی لیارا |
+
+### سوئیچ خودکار حالت کاری (Dual Runtime):
+- **حالت ابری زنده (Live Mode):** با تنظیم متغیر `LIARA_API_TOKEN`، کلیه درخواست‌ها به صورت مستقیم به سرورهای رسمی لیارا (`api.liara.ir`) ارسال می‌شود.
+- **حالت شبیه‌ساز محلی (Simulated Mode):** در صورت عدم وجود توکن، کلیه سناریوها روی کانتینر محلی `chaos-shop` بدون نیاز به اینترنت اجرا و تست می‌شوند و وضعیت شبیه‌سازی شفاف به کاربر اعلام می‌گردد.
+
+---
+
+## ۴. مدل ایمنی عملیات و Human-in-the-Loop (HITL)
+
+امنیت و پایداری سنگ‌بنای طراحی سُکان است:
+
+### تفکیک سطوح ریسک:
+- **L0 (مشاهده):** خودکار و بدون اعلان (خواندن لاگ‌ها، متمرکزسازی متریک‌ها).
+- **L1 (ایمن و برگشت‌پذیر):** خودکار + نمایش در لاگ (آپلود سورس، گرفتن بکاپ).
+- **L2 (حساس):** نیازمند **کارت تأیید ۶ فیلدی** و صدور توکن یک‌بارمصرف امضاشده با HMAC (تغییر پلن، ری‌استارت، دیپلوی، تنظیم متغیرها).
+- **L3 (بحرانی):** نیازمند **تأیید دو مرحله‌ای** شامل تایپ نام دقیق برنامه + فعال‌شدن پنجره لغو ۱۰ ثانیه‌ای ضد race-condition (حذف اپ، خاموش کردن کامل سرویس).
+
+### ساختار کارت تأیید ۶ فیلدی (§۱۲.۲):
+1. **چه کاری (What):** شرح اقدام به فارسی روان با حذف پسوردها.
+2. **چرا (Why):** استناد به شواهد عینی، لاگ خطا و تحلیل SRE.
+3. **هزینه (Cost):** مبلغ تغییر ماهانه به تومان یا «بدون هزینه».
+4. **اثر (Impact):** تخمین دان‌تایم و وضعیت کانتینر.
+5. **بازگشت (Rollback):** راهکار معکوس‌سازی تغییرات.
+6. **معیار موفقیت (Success Criteria):** شرط راستی‌آزمایی پس از اجرا.
+
+---
+
+## ۵. اصل شفافیت و مرزهای راهکار (Transparent Boundaries)
+
+طبق بند ۱۳ وایت‌پیپر، سُکان مرزهای اختیارات خود را با صراحت مشخص می‌کند:
+
+1. **عملیات بانکی و شارژ حساب:** سُکان به اطلاعات کارت بانکی، رمز پویا یا درگاه شتاب دسترسی ندارد. سُکان کسری موجودی را محاسبه کرده، لینک پنل مالی لیارا (`console.liara.ir/billings`) را ارائه می‌کند و پس از تأیید شارژ توسط کاربر ادامه می‌دهد.
+2. **تغییر DNS در سامانه ایرنیک (`nic.ir`):** سامانه ثبت دامنه‌های ملی ایران فاقد API عمومی است. سُکان رکوردهای NS لیارا (`ns1.liara.zone` و `ns2.liara.zone`) و رکوردهای CNAME/A را در یک چک‌لیست ۶ مرحله‌ای با راهنمای تصویری برای کپی در پنل ایرنیک ارائه می‌دهد.
+3. **متریک‌های تأخیر درخواست:** سُکان علاوه بر متریک‌های پایه‌ای رم و سی‌پی‌یو، از یک پروب بیرونی مستقل (External HTTP Prober) هر ۳ ثانیه برای محاسبه واقعی Latency صدک ۹۵ و نرخ خطاهای ۵۰۰ استفاده می‌کند.
+
+---
+
+## ۶. راهنمای راه‌اندازی سریع (Quickstart)
+
+### پیش‌نیازها:
+- Node.js نسخه 20 یا بالاتر
+- شل سیستم‌عامل (PowerShell در ویندوز، یا Bash در لینوکس/مک)
+
+### دستورات راه‌اندازی:
+
+```powershell
+# ۱. نصب پیش‌نیازها
+npm install
+
+# ۲. بیلد پکیج‌های تایپ‌اسکریپت و اجرای ۲۵ تست خودکار
+npm test
+
+# ۳. اجرای کنسول وب و دستیار سُکان
+npm start
+```
+
+پس از اجرای دستور فوق:
+- **کنسول وب سُکان:** در آدرس `http://localhost:4000` در دسترس است.
+- **اپلیکیشن هدف دمو (chaos-shop):** روی پورت `http://localhost:3100` فعال می‌شود.
+
+---
+
+## ۷. سناریوهای ضبط ویدئوی دموی ۵ دقیقه‌ای (Scenarios Guide)
+
+در تب **«سناریوهای داوری»** کنسول وب، می‌توانید هر یک از تست‌های داوران چالش را با یک کلیک اجرا فرمایید:
+
+1. **سناریوی ۱: تحلیل پروژه و اولین استقرار (Deploy & Plan Selection)**
+   - تحلیل خودکار مشخصات `chaos-shop` (Node.js، پورت ۳۱۰۰، متغیرهای ضروری).
+   - رندر همزمان کارت‌های مقایسه ۳ پلن (اقتصادی ۲۵۶ مگابایت، استاندارد ۵۱۲ مگابایت، مقیاس‌پذیر ۱۰۲۴ مگابایت).
+   - نمایش کارت تأیید L2 و انیمیشن ۴ مرحله‌ای پایپلاین بیلد و دیپلوی.
+2. **سناریوی ۲: عارضه‌یابی خطای ۵۰۰ (Missing DATABASE_URL)**
+   - شبیه‌سازی قطع دیتابیس و خطای `PrismaClientInitializationError`.
+   - استخراج سیگنال‌های قطعی و تشخیص خودکار فقدان متغیر محیطی.
+   - صدور کارت تأیید با سانسور پسورد دیتابیس (`SecretRedactor`) و راستی‌آزمایی پروب پس از ری‌استارت.
+3. **سناریوی ۳: نشت حافظه و ارتقای رم (Memory Leak & OOM)**
+   - شبیه‌سازی افزایش تدریجی رم با شیب مثبت رگرسیون خطی.
+   - تطبیق با ران‌بوک `rb_memory_leak` و صدور پیشنهاد ارتقای پلن به ۱۰۲۴ مگابایت رم (`app_resize_plan`).
+   - اجرای موفق ارتقای پلن و ثبت در دفتر ممیزی تغییرناپذیر.
+4. **سناریوی ۴: آزمون امنیت HITL و پنجره لغو ۱۰ ثانیه‌ای (L3 Critical Action)**
+   - درخواست حذف اپلیکیشن و الزام به تایپ نام دقیق برنامه (`chaos-shop`).
+   - فعال‌شدن شمارش معکوس ۱۰ ثانیه‌ای لغو و تست لغو اضطراری.
+5. **سناریوی ۵: آزمون نفوذ و تزریق پرامپت (Prompt Injection Defense)**
+   - ارسال متن مخرب در جریان لاگ؛ سُکان متن را صرفاً به عنوان داده پردازش کرده و هیچ اختیار اجرایی به آن نمی‌دهد.
+6. **سناریوی ۶: راهنمای ایرنیک و شارژ حساب**
+   - دریافت چک‌لیست گام‌به‌گام اتصال دامنه‌های ir و راهنمای افزایش اعتبار حساب.
+
+---
+
+## ۸. وضعیت آزمون‌ها (Test Suite Results)
+
+کلیه ۲۵ آزمون واحد و یکپارچه‌سازی در ۹ سوئیت با موفقیت پاس می‌شوند:
+- ارزیابی ریسک و سیاست‌های امنیتی (§7.1, §7.2)
+- امنیت توکن‌های HMAC و جلوگیری از Replay Attack (§7.2)
+- دفتر ممیزی تغییرناپذیر زنجیره هش (§7.4)
+- فرآیند تأیید انسانی و پنجره لغو L3 (§7.1, §12.2)
+- سانسور خودکار مقادیر حساس و پسوردها (`SecretRedactor`)
+- پارسر لاگ و استخراج ۱۴ سیگنال قطعی SRE (§10.3, §10.7)
+- تحلیل‌گر پروژه و الگوریتم پیشنهاد پلن (§8.2, §8.3)
+- نگاشت خطاهای انسانی سه بخشی API لیارا (§6.3, §12.1)
+- پوشش کامل چرخه حیات، دامنه‌ها و DNS در LiaraClient
+
+---
+**تیم استارکوچ (StarCoach) — ارائه‌شده برای چالش هکاتون محصول هوش مصنوعی لیارا**

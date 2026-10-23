@@ -168,41 +168,14 @@ export class ProjectAnalyzer {
       }
     }
 
-    // Scan source files for process.env.X or listen ports
-    const scanDir = (dir: string, depth = 0) => {
-      if (depth > 2) return;
-      try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const e of entries) {
-          if (e.name === "node_modules" || e.name === ".git" || e.name === "dist" || e.name === "build") continue;
-          const full = path.join(dir, e.name);
-          if (e.isDirectory()) {
-            scanDir(full, depth + 1);
-          } else if (/\.(js|ts|jsx|tsx|py|php)$/.test(e.name)) {
-            const code = fs.readFileSync(full, "utf-8");
-            // Match process.env.VAR_NAME
-            const envMatches = code.matchAll(/process\.env\.([A-Z0-9_]{3,})/g);
-            for (const m of envMatches) {
-              if (m[1] && !["NODE_ENV", "PORT"].includes(m[1])) {
-                requiredEnvs.add(m[1]);
-              }
-            }
-            // Match app.listen(XXXX)
-            const listenMatch = code.match(/app\.listen\(\s*(?:process\.env\.PORT\s*\|\|\s*)?(\d{4})/);
-            if (listenMatch && listenMatch[1]) {
-              detectedPort = parseInt(listenMatch[1], 10);
-            }
-            // Health endpoint check
-            if (code.includes('"/health"') || code.includes("'/health'") || code.includes('"/api/health"')) {
-              healthCheckEndpoint = "/health";
-            }
-          }
-        }
-      } catch {
-        // ignore scan error
-      }
-    };
-    scanDir(projectPath);
+    // Scan source files for ports and environment variables
+    const scanResult = ProjectAnalyzer.scanSourceForPortAndEnvs(projectPath, requiredEnvs);
+    if (scanResult.detectedPort) {
+      detectedPort = scanResult.detectedPort;
+    }
+    if (scanResult.healthCheckEndpoint) {
+      healthCheckEndpoint = scanResult.healthCheckEndpoint;
+    }
 
     // Check existing liara.json
     const liaraJsonRaw = readFile("liara.json");
@@ -346,4 +319,210 @@ export class ProjectAnalyzer {
       requiredTopUpTomans,
     };
   }
+
+  /**
+   * Scans source files (.js, .ts, .py, .php) for port definitions and environment variables.
+   */
+  public static scanSourceForPortAndEnvs(
+    projectPath: string,
+    existingEnvs?: Set<string>
+  ): {
+    detectedPort?: number;
+    requiredEnvKeys: string[];
+    requiredEnvs: string[];
+    healthCheckEndpoint?: string;
+  } {
+    const foundEnvs: Set<string> = new Set();
+    let detectedPort: number | undefined;
+    let healthCheckEndpoint: string | undefined;
+
+    const scanDir = (dir: string, depth = 0) => {
+      if (depth > 4) return;
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          if (
+            e.name === "node_modules" ||
+            e.name === ".git" ||
+            e.name === ".next" ||
+            e.name === "dist" ||
+            e.name === "build" ||
+            e.name === "vendor" ||
+            e.name === ".venv" ||
+            e.name === "__pycache__"
+          ) {
+            continue;
+          }
+          const full = path.join(dir, e.name);
+          if (e.isDirectory()) {
+            scanDir(full, depth + 1);
+          } else if (/\.(js|ts|jsx|tsx|mjs|cjs|py|php)$/i.test(e.name)) {
+            const code = fs.readFileSync(full, "utf-8");
+
+            // 1. Port detection in .js / .ts / source files
+            // Direct numeric listen: (app|server|http|fastify).listen(3100)
+            const listenMatch = code.match(/(?:app|server|http|fastify)\.listen\(\s*(\d{4,5})/i);
+            // Variable listen: (app|server|http|fastify).listen(PORT, ...)
+            const listenVarMatch = code.match(/(?:app|server|http|fastify)\.listen\(\s*([a-zA-Z_][a-zA-Z0-9_]*)/i);
+            // Fallback or default port in process.env.PORT expressions: process.env.PORT || 3100 or '3100' or ?? 3100
+            const envPortMatch = code.match(/process\.env(?:\.PORT|\[['"]PORT['"]\])\s*(?:\|\||\?\?)\s*['"]?(\d{4,5})['"]?/i);
+            // Standalone variable definition: const PORT = ... 3100 ...
+            const portVarMatch = code.match(
+              /(?:const|let|var)\s+PORT\s*(?:=|\|\|)\s*(?:(?:parseInt|Number)\([^)]*\|\|\s*)?['"]?(\d{4,5})['"]?/i
+            );
+            // Python / Flask / FastAPI: app.run(port=XXXX) or uvicorn.run(..., port=XXXX)
+            const pyPortMatch = code.match(/(?:app\.run|uvicorn\.run)\([^)]*port\s*=\s*(\d{4,5})/i);
+            // Go: http.ListenAndServe(":XXXX", ...)
+            const goPortMatch = code.match(/ListenAndServe\(\s*['"](?::)?(\d{4,5})['"]/i);
+
+            if (listenMatch && listenMatch[1]) {
+              detectedPort = parseInt(listenMatch[1], 10);
+            } else if (envPortMatch && envPortMatch[1]) {
+              detectedPort = parseInt(envPortMatch[1], 10);
+            } else if (portVarMatch && portVarMatch[1]) {
+              detectedPort = parseInt(portVarMatch[1], 10);
+            } else if (pyPortMatch && pyPortMatch[1]) {
+              detectedPort = parseInt(pyPortMatch[1], 10);
+            } else if (goPortMatch && goPortMatch[1]) {
+              detectedPort = parseInt(goPortMatch[1], 10);
+            } else if (listenVarMatch && listenVarMatch[1]) {
+              const varName = listenVarMatch[1];
+              const varRegex = new RegExp(`(?:const|let|var)\\s+${varName}\\s*=[^;]*?['"]?(\\d{4,5})['"]?`, "i");
+              const m = code.match(varRegex);
+              if (m && m[1]) detectedPort = parseInt(m[1], 10);
+            }
+
+            // 2. JS / TS environment variables: process.env.KEY or process.env['KEY']
+            const jsEnvMatches = code.matchAll(
+              /process\.env(?:\.([A-Za-z0-9_]{2,})|\[\s*['"]([A-Za-z0-9_]{2,})['"]\s*\])/g
+            );
+            for (const m of jsEnvMatches) {
+              const k = m[1] || m[2];
+              if (k && !["NODE_ENV", "PORT"].includes(k)) {
+                foundEnvs.add(k);
+                if (existingEnvs) existingEnvs.add(k);
+              }
+            }
+
+            // 3. Python and PHP environment variables:
+            // os.environ.get('KEY'), os.getenv('KEY'), os.environ['KEY'], env('KEY'), and getenv('KEY')
+            const pyPhpMatches = code.matchAll(
+              /(?:os\.environ\.get|os\.getenv|env|getenv)\(\s*['"]([A-Za-z0-9_]+)['"]|os\.environ\[\s*['"]([A-Za-z0-9_]+)['"]\s*\]/g
+            );
+            for (const m of pyPhpMatches) {
+              const k = m[1] || m[2];
+              if (k && !["PORT", "NODE_ENV"].includes(k)) {
+                foundEnvs.add(k);
+                if (existingEnvs) existingEnvs.add(k);
+              }
+            }
+
+            // 4. Health endpoint check
+            if (
+              code.includes('"/health"') ||
+              code.includes("'/health'") ||
+              code.includes('"/api/health"')
+            ) {
+              healthCheckEndpoint = "/health";
+            }
+          }
+        }
+      } catch {
+        // ignore scan error
+      }
+    };
+
+    if (fs.existsSync(projectPath)) {
+      scanDir(projectPath);
+    }
+
+    const envList = Array.from(foundEnvs);
+    return {
+      detectedPort,
+      requiredEnvKeys: envList,
+      requiredEnvs: envList,
+      healthCheckEndpoint,
+    };
+  }
+
+  /**
+   * Generates a step-by-step Persian setup checklist and required DNS records for custom domains (§8.2 / DNS & Domain).
+   * Detects .ir domains and includes IRNIC (nic.ir) configuration guidelines and free SSL provisioning.
+   */
+  public static generateDomainChecklist(
+    domain: string,
+    appName: string
+  ): {
+    isIrDomain: boolean;
+    steps_fa: string[];
+    records: Array<{ type: string; host: string; value: string }>;
+  } {
+    const cleanDomain = (domain || "").trim().toLowerCase();
+    const isIrDomain = cleanDomain.endsWith(".ir");
+    const app = (appName || "").trim();
+
+    const records: Array<{ type: string; host: string; value: string }> = [
+      {
+        type: "CNAME",
+        host: "@",
+        value: `${app}.iran.liara.run`,
+      },
+      {
+        type: "CNAME",
+        host: "www",
+        value: `${app}.iran.liara.run`,
+      },
+      {
+        type: "A",
+        host: "@",
+        value: "37.152.180.12",
+      },
+    ];
+
+    const steps_fa: string[] = isIrDomain
+      ? [
+          "ورود به سامانه مدیریت دامنه‌های ایرنیک (nic.ir) با مشخصات دارنده دامنه.",
+          "تنظیم کارگزارهای نام (NameServer) لیارا: در بخش سامانه نام دامنه (DNS) در ایرنیک، کارگزارهای ns1.liara.zone و ns2.liara.zone را ثبت نمایید (انتشار رکوردهای دامنه‌های ir. در ایرنیک معمولاً بین ۲ تا ۲۴ ساعت به طول می‌انجامد).",
+          `پیکربندی رکوردهای DNS: در سامانه مدیریت DNS، رکورد CNAME با میزبان @ و www به آدرس ${app}.iran.liara.run و رکورد A با میزبان @ به آی‌پی 37.152.180.12 تعریف کنید.`,
+          `ثبت دامنه در کنسول لیارا: وارد بخش دامنه‌های برنامه ${app} شده و دامنه ${cleanDomain} را اضافه کنید.`,
+          "بررسی وضعیت اتصال دامنه: بر روی دکمه «بررسی دامنه» کلیک کنید تا صحت رکوردهای DNS تایید گردد.",
+          "فعال‌سازی گواهی رایگان SSL (Let's Encrypt): پس از اتصال موفق دامنه، گواهی SSL رایگان لیارا را از تب دامنه‌ها فعال کنید.",
+        ]
+      : [
+          "ورود به پنل ثبت‌کننده دامنه (Registrar) یا سرویس مدیریت DNS (مانند سامانه DNS لیارا یا Cloudflare).",
+          "تنظیم کارگزارهای نام (NameServers) لیارا (ns1.liara.zone و ns2.liara.zone) در صورت استفاده از سرویس DNS لیارا.",
+          `تنظیم رکوردهای DNS: ثبت رکورد CNAME برای @ و www به مقدار ${app}.iran.liara.run یا رکورد A برای @ به مقدار 37.152.180.12.`,
+          `افزودن دامنه ${cleanDomain} در بخش دامنه‌های برنامه ${app} در کنسول لیارا.`,
+          "کلیک بر روی گزینه «بررسی دامنه» جهت اطمینان از انتشار رکوردهای DNS.",
+          "فعال‌سازی گواهی SSL رایگان از کنسول کاربری لیارا.",
+        ];
+
+    return {
+      isIrDomain,
+      steps_fa,
+      records,
+    };
+  }
+
+  public generateDomainChecklist(
+    domain: string,
+    appName: string
+  ): {
+    isIrDomain: boolean;
+    steps_fa: string[];
+    records: Array<{ type: string; host: string; value: string }>;
+  } {
+    return ProjectAnalyzer.generateDomainChecklist(domain, appName);
+  }
+}
+
+export function scanSourceForPortAndEnvs(
+  projectPath: string,
+  existingEnvs?: Set<string>
+) {
+  return ProjectAnalyzer.scanSourceForPortAndEnvs(projectPath, existingEnvs);
+}
+
+export function generateDomainChecklist(domain: string, appName: string) {
+  return ProjectAnalyzer.generateDomainChecklist(domain, appName);
 }

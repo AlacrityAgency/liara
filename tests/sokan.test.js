@@ -334,3 +334,223 @@ describe("8. HumanError Mapping (§6.3, §12.1)", () => {
     assert.strictEqual(err409.code, "CONFLICT");
   });
 });
+
+describe("9. Extended Coverage: Memory Leak Runbook, Port/Domain Analyzer & Liara v2 API Methods", () => {
+  it("analyzes demo/chaos-shop detecting platform, detectedPort 3100, and requiredEnvKeys", async () => {
+    const demoDir = path.resolve(__dirname, "../demo/chaos-shop");
+    const profile = await ProjectAnalyzer.analyze(demoDir);
+
+    const platform = profile.platform || profile.detectedPlatform;
+    assert.strictEqual(platform, "node");
+    assert.strictEqual(profile.detectedPort, 3100);
+    const envKeys = profile.requiredEnvKeys || profile.requiredEnvs;
+    assert.ok(Array.isArray(envKeys), "requiredEnvKeys must be an array");
+    assert.ok(envKeys.includes("DATABASE_URL"), "requiredEnvKeys must contain DATABASE_URL");
+  });
+
+  it("diagnoses memory leak scenario extracting MEMORY_LEAK_TREND and ranking remediation", () => {
+    const now = new Date();
+    const leakTimestamp = now.toISOString();
+    const leakMessage = "[CHAOS_LEAK] Retained +35MB in JS heap. Current heapUsed: 420MB";
+
+    const leakLog = {
+      id: "leak-1",
+      timestamp: leakTimestamp,
+      stream: "stdout",
+      message: leakMessage,
+    };
+
+    const ramValues = [300, 350, 400, 450];
+    const ramSamples = ramValues.map((val, idx) => ({
+      ts: new Date(now.getTime() - (3 - idx) * 60000).toISOString(),
+      timestamp: new Date(now.getTime() - (3 - idx) * 60000).toISOString(),
+      mb: val,
+      ramMB: val,
+      value: val,
+    }));
+
+    const recentMetrics = Object.assign([300, 350, 400, 450], {
+      ramMaxMB: 512,
+      memoryLimitMB: 512,
+      samples: ramSamples,
+      ram: [300, 350, 400, 450],
+      values: [300, 350, 400, 450],
+    });
+
+    const evidenceData = {
+      app: {
+        name: "chaos-shop",
+        port: 3100,
+        envKeys: ["DATABASE_URL"],
+        scale: 1,
+        memoryLimitMB: 512,
+        ramMaxMB: 512,
+      },
+      applets: [{ state: "running", restarts: 0 }],
+      events: [],
+      releases: [
+        {
+          id: "rel_1",
+          state: "READY",
+          createdAt: new Date(now.getTime() - 3600000).toISOString(),
+          finishedAt: new Date(now.getTime() - 3570000).toISOString(),
+        },
+      ],
+      ramMaxMB: 512,
+      memoryLimitMB: 512,
+      recentMetrics,
+      memory: ramSamples,
+      cpu: [{ ts: leakTimestamp, pct: 25 }],
+      parsedLogs: [leakLog],
+      logs: [
+        {
+          id: "leak-1",
+          ts: leakTimestamp,
+          text: leakMessage,
+        },
+      ],
+      probes: [{ id: "p1", ts: leakTimestamp, path: "/", status: 200, ms: 50 }],
+      db: { reachable: true },
+      symptomStart: leakTimestamp,
+      window: {
+        start: new Date(now.getTime() - 300000).toISOString(),
+        end: leakTimestamp,
+      },
+    };
+
+    const incident = DiagnosticEngine.diagnose(evidenceData, "افزایش مصرف حافظه و نشت RAM");
+
+    // 1. Extracts MEMORY_LEAK_TREND signal
+    const leakSignal = incident.signals.find(
+      (s) => s.kind === "MEMORY_LEAK_TREND" || s.type === "MEMORY_LEAK_TREND"
+    );
+    assert.ok(leakSignal, "Incident must extract MEMORY_LEAK_TREND signal");
+
+    // 2. Ranks rb_memory_leak (or app_resize_plan) as the top hypothesis
+    assert.ok(incident.hypotheses.length > 0, "Incident must contain hypotheses");
+    const topHypothesis = incident.hypotheses[0];
+    const topId = topHypothesis.id || topHypothesis.runbookId || topHypothesis.code;
+    const actionType =
+      topHypothesis.remediation?.actionType ||
+      topHypothesis.remediations?.[0]?.action ||
+      topHypothesis.actionType;
+    const isTopMatching =
+      topId === "rb_memory_leak" ||
+      topId === "hyp_rb_memory_leak" ||
+      topId === "app_resize_plan" ||
+      actionType === "app_resize_plan";
+    assert.ok(isTopMatching, "Top hypothesis must be rb_memory_leak or app_resize_plan");
+
+    // 3. Remediation actionType === 'app_resize_plan'
+    assert.strictEqual(actionType, "app_resize_plan");
+  });
+
+  it("exposes all lifecycle and domain/DNS methods on LiaraClient", () => {
+    const requiredMethods = [
+      "uploadSource",
+      "createRelease",
+      "getBuildLogs",
+      "rollbackRelease",
+      "cancelRelease",
+      "listDomains",
+      "addDomain",
+      "checkDomain",
+      "enableSsl",
+      "createDnsZone",
+      "checkDnsNameservers",
+      "upsertDnsRecord",
+    ];
+
+    let client;
+    try {
+      client = new LiaraClient({ apiKey: "test-token" });
+    } catch {
+      try {
+        client = new LiaraClient("test-token");
+      } catch {
+        try {
+          client = new LiaraClient();
+        } catch {
+          client = null;
+        }
+      }
+    }
+
+    for (const method of requiredMethods) {
+      const fn =
+        (client && typeof client[method] === "function" ? client[method] : null) ||
+        (typeof LiaraClient.prototype?.[method] === "function" ? LiaraClient.prototype[method] : null) ||
+        (typeof LiaraClient[method] === "function" ? LiaraClient[method] : null);
+
+      assert.strictEqual(
+        typeof fn,
+        "function",
+        `LiaraClient must expose lifecycle/DNS method: ${method}`
+      );
+    }
+  });
+});
+
+describe("10. Multi-Agent Jury Fixes Verification (§16)", () => {
+  it("generates and authorizes app_resize_plan approval for memory leak remediation", () => {
+    const service = new ApprovalService();
+    const card = {
+      title_fa: "ارتقای پلن رم به ۱۰۲۴ مگابایت",
+      what_fa: "تغییر پلن chaos-shop از ۵۱۲ به ۱۰۲۴ مگابایت",
+      why_fa: "نشت حافظه و خطر وقوع OOM",
+      cost_fa: "+۱۲۰,۰۰۰ تومان در ماه",
+      impact_fa: "ری‌استارت کوتاه کانتینر",
+      rollback_fa: "امکان تنزل پلن",
+      successCriteria_fa: "مصرف رم پایدار زیر ۸۰٪",
+    };
+
+    const outcome = service.request("app_resize_plan", { project: "chaos-shop", planID: "g2-large" }, card, "agent");
+    assert.strictEqual(outcome.kind, "pending");
+    assert.strictEqual(outcome.risk, "L2");
+
+    const aprId = outcome.approval.id;
+    const approveResult = service.approve(aprId);
+    assert.strictEqual(approveResult.ok, true);
+
+    const authResult = service.authorize("app_resize_plan", { project: "chaos-shop", planID: "g2-large" }, aprId, "user");
+    assert.strictEqual(authResult.ok, true);
+  });
+
+  it("redacts secrets inside approval card what_fa and why_fa fields", () => {
+    const rawUri = "postgres://root:superSecretPwd@postgres-db:5432/maindb";
+    const redacted = SecretRedactor.redactText(`تنظیم DATABASE_URL=${rawUri}`);
+    assert.strictEqual(redacted.includes("superSecretPwd"), false);
+    assert.strictEqual(redacted.includes("[REDACTED]"), true);
+  });
+
+  it("generates 6-step IRNIC domain setup checklist for .ir domains", () => {
+    const checklist = ProjectAnalyzer.generateDomainChecklist("my-store.ir", "chaos-shop");
+    assert.strictEqual(checklist.isIrDomain, true);
+    assert.strictEqual(checklist.steps_fa.length >= 6, true);
+    assert.ok(checklist.steps_fa.some((s) => s.includes("ایرنیک") || s.includes("nic.ir")));
+    assert.ok(checklist.records.some((r) => r.type === "CNAME" && r.value.includes("chaos-shop.iran.liara.run")));
+  });
+
+  it("captures SRE diagnostic snapshots before and after remediation", () => {
+    const evidenceData = {
+      app: { name: "chaos-shop", port: 3100, memoryLimitMB: 512, scale: 1 },
+      applets: [{ state: "running", restarts: 0 }],
+      events: [],
+      releases: [{ id: "rel_1", state: "READY", createdAt: new Date().toISOString(), finishedAt: new Date().toISOString() }],
+      memory: [{ ts: new Date().toISOString(), mb: 120 }],
+      cpu: [{ ts: new Date().toISOString(), pct: 15 }],
+      logs: [{ id: "l1", ts: new Date().toISOString(), text: "Error: server 500 error", stream: "stderr" }],
+      probes: [{ id: "p1", ts: new Date().toISOString(), path: "/health", status: 200, ms: 45, ok: true }],
+      db: { reachable: true },
+      window: { start: new Date().toISOString(), end: new Date().toISOString() },
+    };
+
+    const snapshot = DiagnosticEngine.takeSnapshot(evidenceData);
+    assert.strictEqual(typeof snapshot.errorsPerMinute, "number");
+    assert.strictEqual(snapshot.probeOk, 1);
+    assert.strictEqual(snapshot.probeTotal, 1);
+    assert.strictEqual(typeof snapshot.memoryPeakPct, "number");
+  });
+});
+
+

@@ -26,11 +26,13 @@ export interface AppSummary {
 export class LiaraClient {
   private readonly token?: string;
   private readonly baseUrl: string;
+  private readonly dnsBaseUrl: string;
   private readonly isSimulated: boolean;
 
   constructor(config: LiaraClientConfig = {}) {
     this.token = config.apiToken || process.env.LIARA_API_TOKEN;
     this.baseUrl = config.baseUrl || "https://api.liara.ir";
+    this.dnsBaseUrl = config.dnsBaseUrl || "https://dns-service.liara.ir";
     this.isSimulated = config.isSimulated ?? !this.token;
   }
 
@@ -38,7 +40,11 @@ export class LiaraClient {
     return !this.isSimulated && !!this.token;
   }
 
-  private async request<T>(path: string, options: RequestInit = {}): Promise<ActionResult<T>> {
+  private async request<T>(
+    path: string,
+    options: RequestInit = {},
+    baseUrlOverride?: string
+  ): Promise<ActionResult<T>> {
     if (this.isSimulated) {
       return {
         ok: false,
@@ -53,12 +59,17 @@ export class LiaraClient {
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
-      "Content-Type": "application/json",
       ...(options.headers as Record<string, string>),
     };
 
+    if (!headers["Content-Type"] && !(options.body instanceof FormData)) {
+      headers["Content-Type"] = "application/json";
+    }
+
+    const base = baseUrlOverride || this.baseUrl;
+
     try {
-      const res = await fetch(`${this.baseUrl}${path}`, {
+      const res = await fetch(`${base}${path}`, {
         ...options,
         headers,
       });
@@ -168,7 +179,109 @@ export class LiaraClient {
 
   async getLogs(name: string, since?: string): Promise<ActionResult<unknown>> {
     const q = since ? `?since=${encodeURIComponent(since)}` : "";
-    return this.request(`/v1/projects/${encodeURIComponent(name)}/logs${q}`);
+    return this.request(`/v2/projects/${encodeURIComponent(name)}/logs${q}`);
+  }
+
+  async uploadSource(name: string, body: unknown): Promise<ActionResult<{ sourceID: string }>> {
+    const isRawBody =
+      typeof body === "string" ||
+      body instanceof FormData ||
+      (typeof Blob !== "undefined" && body instanceof Blob) ||
+      (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer) ||
+      (typeof Buffer !== "undefined" && Buffer.isBuffer(body));
+
+    return this.request<{ sourceID: string }>(`/v2/projects/${encodeURIComponent(name)}/sources`, {
+      method: "POST",
+      body: isRawBody ? (body as BodyInit) : JSON.stringify(body),
+    });
+  }
+
+  async createRelease(
+    name: string,
+    payload: { sourceID: string; envVars?: Array<{ key: string; value: string }>; port?: number }
+  ): Promise<ActionResult<{ releaseID: string }>> {
+    return this.request<{ releaseID: string }>(`/v2/projects/${encodeURIComponent(name)}/releases`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async getBuildLogs(name: string, releaseID: string): Promise<ActionResult<unknown>> {
+    return this.request(`/v2/projects/${encodeURIComponent(name)}/releases/${encodeURIComponent(releaseID)}/logs`);
+  }
+
+  async rollbackRelease(name: string, releaseID: string): Promise<ActionResult<unknown>> {
+    return this.request(`/v2/projects/${encodeURIComponent(name)}/releases/${encodeURIComponent(releaseID)}/rollback`, {
+      method: "POST",
+    });
+  }
+
+  async cancelRelease(name: string, releaseID: string): Promise<ActionResult<unknown>> {
+    return this.request(`/v2/projects/${encodeURIComponent(name)}/releases/${encodeURIComponent(releaseID)}/cancel`, {
+      method: "POST",
+    });
+  }
+
+  async listDomains(): Promise<ActionResult<{ domains: Array<{ _id: string; name: string; status: string; project?: string }> }>> {
+    return this.request<{ domains: Array<{ _id: string; name: string; status: string; project?: string }> }>("/v1/domains");
+  }
+
+  async addDomain(
+    name: string,
+    project: string
+  ): Promise<ActionResult<{ domain: { _id: string; name: string; status: string } }>> {
+    return this.request<{ domain: { _id: string; name: string; status: string } }>("/v1/domains", {
+      method: "POST",
+      body: JSON.stringify({ name, project, type: "PROJECT" }),
+    });
+  }
+
+  async checkDomain(domainID: string): Promise<ActionResult<{ status: string }>> {
+    return this.request<{ status: string }>(`/v1/domains/${encodeURIComponent(domainID)}/check`, {
+      method: "PUT",
+    });
+  }
+
+  async enableSsl(domainID: string): Promise<ActionResult<unknown>> {
+    return this.request("/v1/domains/provision-ssl", {
+      method: "POST",
+      body: JSON.stringify({ domainId: domainID }),
+    });
+  }
+
+  async createDnsZone(name: string): Promise<ActionResult<{ id: string; name: string; nameservers: string[] }>> {
+    return this.request<{ id: string; name: string; nameservers: string[] }>(
+      "/api/v1/zones",
+      {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      },
+      this.dnsBaseUrl
+    );
+  }
+
+  async checkDnsNameservers(zoneID: string): Promise<ActionResult<{ status: string }>> {
+    return this.request<{ status: string }>(
+      `/api/v1/zones/${encodeURIComponent(zoneID)}/check`,
+      {
+        method: "PUT",
+      },
+      this.dnsBaseUrl
+    );
+  }
+
+  async upsertDnsRecord(
+    zoneID: string,
+    record: { type: string; name: string; contents: unknown[]; ttl?: number }
+  ): Promise<ActionResult<{ id: string }>> {
+    return this.request<{ id: string }>(
+      `/api/v1/zones/${encodeURIComponent(zoneID)}/dns-records`,
+      {
+        method: "POST",
+        body: JSON.stringify(record),
+      },
+      this.dnsBaseUrl
+    );
   }
 
   async getMetricsSummary(name: string): Promise<ActionResult<unknown>> {

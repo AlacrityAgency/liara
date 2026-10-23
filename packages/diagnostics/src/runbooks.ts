@@ -12,7 +12,7 @@ export interface DiagnosticRunbook {
   confirmingTest_fa?: string;
 }
 
-export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
+export const RUNBOOKS: DiagnosticRunbook[] = [
   {
     id: "rb_missing_env",
     title_fa: "فقدان متغیر محیطی ضروری",
@@ -148,4 +148,90 @@ export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = [
       },
     ],
   },
+  {
+    id: "rb_memory_leak",
+    title_fa: "نشت تدریجی حافظه (Memory Leak) و اشباع رم",
+    symptoms: ["memory", "leak", "slow", "502", "503"],
+    requiredSignals: ["MEMORY_LEAK_TREND"],
+    supportingSignals: ["MEMORY_PRESSURE", "UPSTREAM_SLOW", "DEPLOY_REGRESSION"],
+    contradictingSignals: ["APP_STOPPED"],
+    explain_fa: "نشت تدریجی حافظه باعث افزایش مداوم رم و در نهایت کندی یا از دسترس خارج شدن سرویس می‌شود.",
+    confirmingTest_fa: "بررسی شیب نمودار حافظه و لاگ‌های نشت حافظه",
+    remediations: [
+      {
+        id: "rem_leak_resize",
+        action: "app_resize_plan",
+        params: { newPlanId: "ram-1g-cpu-0.5" },
+        riskLevel: "L2",
+        label_fa: "ارتقای پلن به پلن بالاتر (۱ گیگابایت رم) و ری‌استارت کنترل‌شده سرویس برای آزادسازی حافظه",
+        note_fa: "ارتقای پلن به پلن بالاتر (۱ گیگابایت رم) و ری‌استارت کنترل‌شده سرویس برای آزادسازی حافظه",
+        successCriteria_fa: "آزادسازی حافظه و بازگشت سرویس به وضعیت پایدار",
+      },
+    ],
+  },
+  {
+    id: "rb_disk_full",
+    title_fa: "پر شدن فضای دیسک (Disk Full)",
+    symptoms: ["disk", "enospc", "500", "error"],
+    requiredSignals: ["DISK_FULL"],
+    supportingSignals: ["APP_EXCEPTION"],
+    contradictingSignals: ["APP_STOPPED"],
+    explain_fa: "فضای دیسک سرویس پر شده و امکان نوشتن فایل یا لاگ جدید وجود ندارد.",
+    confirmingTest_fa: "بررسی درصد مصرف دیسک و لاگ‌های خطای ENOSPC",
+    remediations: [
+      {
+        id: "rem_disk_resize",
+        action: "app_resize_plan",
+        params: { newPlanId: "ram-1g-cpu-0.5" },
+        riskLevel: "L2",
+        label_fa: "افزایش فضای دیسک/پلن و پاک‌سازی فایل‌های موقت",
+        note_fa: "افزایش فضای دیسک/پلن و پاک‌سازی فایل‌های موقت",
+        successCriteria_fa: "آزادسازی فضای دیسک و رفع خطای ENOSPC",
+      },
+    ],
+  },
+  {
+    id: "rb_upstream_slow",
+    title_fa: "کندی یا تایم‌اوت سرویس‌های بالادستی (Upstream Slow)",
+    symptoms: ["slow", "timeout", "504", "502"],
+    requiredSignals: ["UPSTREAM_SLOW"],
+    supportingSignals: ["CPU_SATURATION", "TRAFFIC_SPIKE"],
+    contradictingSignals: ["APP_STOPPED"],
+    explain_fa: "سرویس‌های خارجی یا بالادستی با تأخیر پاسخ می‌دهند یا پاسخ نمی‌دهند که باعث تجمع درخواست‌ها شده است.",
+    confirmingTest_fa: "بررسی زمان پاسخ پروب‌ها و خطاهای upstream timeout در لاگ",
+    remediations: [
+      {
+        id: "rem_upstream_restart",
+        action: "app_restart",
+        params: {},
+        riskLevel: "L2",
+        label_fa: "ری‌استارت سرویس و بازنشانی استخر اتصالات بیرونی (Connection Pool)",
+        note_fa: "ری‌استارت سرویس و بازنشانی استخر اتصالات بیرونی (Connection Pool)",
+        successCriteria_fa: "بازنشانی اتصالات شبکه و کاهش زمان پاسخگویی",
+      },
+    ],
+  },
+  {
+    id: "rb_app_stopped",
+    title_fa: "خاموش بودن یا توقف اپلیکیشن (App Stopped)",
+    symptoms: ["down", "stopped", "503"],
+    requiredSignals: ["APP_STOPPED"],
+    supportingSignals: ["CRASH_LOOP"],
+    contradictingSignals: [],
+    explain_fa: "اپلیکیشن در وضعیت خاموش یا بدون نمونه اجرایی قرار دارد.",
+    confirmingTest_fa: "بررسی تعداد نمونه‌های فعال (scale) اپلیکیشن",
+    remediations: [
+      {
+        id: "rem_start_app",
+        action: "app_restart",
+        params: {},
+        riskLevel: "L2",
+        label_fa: "روشن کردن و راه‌اندازی مجدد سرویس متوقف‌شده",
+        note_fa: "روشن کردن و راه‌اندازی مجدد سرویس متوقف‌شده",
+        successCriteria_fa: "روشن شدن کانتینر و پاسخ‌دهی موفق به پروب",
+      },
+    ],
+  },
 ];
+
+export const STANDARD_RUNBOOKS: DiagnosticRunbook[] = RUNBOOKS;

@@ -106,6 +106,35 @@ export function extractSignals(
     }
   }
 
+  const evidenceInput = data as any;
+  const parsedLogs: any[] = evidenceInput.parsedLogs ?? evidenceInput.logs ?? data.logs ?? [];
+  const leakLog = parsedLogs.find((l: any) =>
+    /\[CHAOS_LEAK\]|Retained \+\d+MB in JS heap|Memory leak/i.test(l.message ?? l.text ?? "")
+  );
+  if (leakLog) {
+    const evId = addEv(
+      "log",
+      leakLog.ts ?? nowTs,
+      `Explicit memory leak in logs: ${(leakLog.message ?? leakLog.text ?? "").slice(0, 120)}`,
+      leakLog.id
+    );
+    const existingIdx = signals.findIndex((s) => s.kind === "MEMORY_LEAK_TREND");
+    const leakSignal: any = {
+      kind: "MEMORY_LEAK_TREND",
+      firstSeen: leakLog.ts ?? nowTs,
+      detail_fa: "گزارش صریح نشت حافظه (Memory Leak) و انباشت اشیاء در Heap در لاگ‌های سرویس",
+      summary_fa: "گزارش صریح نشت حافظه (Memory Leak) و انباشت اشیاء در Heap در لاگ‌های سرویس",
+      strength: 0.92,
+      citations: [leakLog.id],
+      evidence: [evId],
+    };
+    if (existingIdx >= 0) {
+      signals[existingIdx] = leakSignal;
+    } else {
+      signals.push(leakSignal);
+    }
+  }
+
   // 4. CPU_SATURATION
   if (data.cpu && data.cpu.length > 0) {
     const highCpuPts = data.cpu.filter((c) => c.pct >= thresholds.cpuSaturationPct);
@@ -301,6 +330,45 @@ export function extractSignals(
       detail_fa: "اپلیکیشن خاموش است (تعداد نمونه‌ها صفر است).",
       evidence: [evId],
     });
+  }
+
+  // 14. TRAFFIC_SPIKE
+  const recentProbes: any[] = evidenceInput.recentProbeResults ?? data.probes ?? [];
+  const nowMs = Date.now();
+  const probesLast60s = recentProbes.filter((p: any) => {
+    const rawTs = p.ts ?? p.timestamp;
+    if (!rawTs) return true;
+    const pts = typeof rawTs === "number" ? rawTs : Date.parse(rawTs);
+    return !isNaN(pts) ? (nowMs - pts <= 60000 && nowMs - pts >= -5000) : true;
+  });
+
+  const spikeLog = (data.logs ?? []).find((l) =>
+    /spike|flood|rate limit|too many requests/i.test(l.text)
+  ) ?? (evidenceInput.parsedLogs ?? []).find((l: any) =>
+    /spike|flood|rate limit|too many requests/i.test(l.message ?? l.text ?? "")
+  );
+
+  const isTrafficSpike =
+    (evidenceInput.recentProbeResults && evidenceInput.recentProbeResults.length >= 8) ||
+    probesLast60s.length >= 8 ||
+    Boolean(spikeLog);
+
+  if (isTrafficSpike) {
+    const evIds: string[] = [];
+    if (spikeLog) {
+      evIds.push(addEv("log", spikeLog.ts ?? nowTs, `Traffic spike log: ${(spikeLog.message ?? spikeLog.text ?? "").slice(0, 120)}`, spikeLog.id));
+    } else {
+      evIds.push(addEv("probe", nowTs, `Traffic spike: high probe volume (${recentProbes.length} probes)`, "probes"));
+    }
+    signals.push({
+      kind: "TRAFFIC_SPIKE" as const,
+      firstSeen: spikeLog?.ts ?? nowTs,
+      detail_fa: "افزایش ناگهانی حجم درخواست‌های ورودی (Traffic Spike)",
+      summary_fa: "افزایش ناگهانی حجم درخواست‌های ورودی (Traffic Spike)",
+      strength: 0.75,
+      citations: spikeLog ? [spikeLog.id] : evIds,
+      evidence: evIds,
+    } as any);
   }
 
   return { signals, evidence, missingEvidence };

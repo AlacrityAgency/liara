@@ -67,16 +67,18 @@ export function parseErrors(lines: readonly LogLine[]): Parsed[] {
     if (PY_START.test(text)) {
       let frame: Frame | undefined;
       let j = i + 1;
+      let matchedPy = false;
       for (; j < lines.length && j < i + 60; j++) {
         const f = lines[j].text.match(PY_FRAME);
         if (f && isUserFrame(f[1])) frame = { file: shortFile(f[1]), line: Number(f[2]) };
         const e = lines[j].text.match(PY_ERR);
         if (e) {
           out.push({ runtime: "python", errorType: e[1], message: e[2], frame, id, ts });
+          matchedPy = true;
           break;
         }
       }
-      i = j;
+      if (matchedPy) i = j;
       continue;
     }
 

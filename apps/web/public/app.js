@@ -159,6 +159,13 @@ document.addEventListener("DOMContentLoaded", () => {
       } catch (err) {}
     });
 
+    evtSource.addEventListener("build_pipeline", (e) => {
+      try {
+        const bp = JSON.parse(e.data);
+        updatePipelineStepper(bp);
+      } catch (err) {}
+    });
+
     evtSource.addEventListener("approval_executed", (e) => {
       fetchState();
     });
@@ -168,6 +175,41 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   }
   setupSSE();
+
+  function updatePipelineStepper(pipeline) {
+    if (!pipeline) return;
+    const bannerText = document.getElementById("pipelineStatusText");
+    if (bannerText && pipeline.message_fa) {
+      bannerText.textContent = pipeline.message_fa;
+    }
+
+    for (let step = 1; step <= 4; step++) {
+      const stepEl = document.getElementById(`pipeStep${step}`);
+      const lineEl = document.getElementById(`pipeLine${step}`);
+      if (!stepEl) continue;
+
+      const circle = stepEl.querySelector(".step-circle");
+      stepEl.classList.remove("completed", "active", "running");
+      if (lineEl) lineEl.classList.remove("completed", "active");
+
+      if (pipeline.status === "completed" || step < pipeline.step) {
+        stepEl.classList.add("completed");
+        if (circle) circle.innerHTML = icon("check");
+        if (lineEl) lineEl.classList.add("completed");
+      } else if (step === pipeline.step) {
+        stepEl.classList.add("active");
+        if (pipeline.status === "running") {
+          stepEl.classList.add("running");
+          if (circle) circle.innerHTML = icon("zap");
+        } else {
+          if (circle) circle.innerHTML = icon("check");
+        }
+        if (lineEl) lineEl.classList.add("active");
+      } else {
+        if (circle) circle.textContent = step.toLocaleString("fa-IR");
+      }
+    }
+  }
 
   function appendTerminalLine(text, stream = "stdout") {
     const line = document.createElement("div");
@@ -205,6 +247,19 @@ document.addEventListener("DOMContentLoaded", () => {
           appStatusText.textContent = "متوقف";
           appStatusVal.className = "status-indicator-badge error";
         }
+
+        if (data.app.memoryLimitMB && data.app.heapUsedMB) {
+          const limit = data.app.memoryLimitMB;
+          const used = data.app.heapUsedMB;
+          const pct = Math.min(100, Math.round((used / limit) * 100));
+          ramLimitText.textContent = `از سقف ${limit.toLocaleString("fa-IR")} مگابایت پلن (${pct.toLocaleString("fa-IR")}٪)`;
+          ramProgressBar.style.width = `${pct}%`;
+          ramProgressBar.classList.toggle("is-critical", pct > 80);
+        }
+      }
+
+      if (data.buildPipeline) {
+        updatePipelineStepper(data.buildPipeline);
       }
 
       // Render Audit
@@ -239,6 +294,10 @@ document.addEventListener("DOMContentLoaded", () => {
         appendChatMessage("agent", data.reply_fa);
       }
 
+      if (data.plans) {
+        renderPlanRecommendation(data.plans);
+      }
+
       if (data.approval) {
         renderApprovalCard(data.approval);
       }
@@ -250,6 +309,78 @@ document.addEventListener("DOMContentLoaded", () => {
       appendChatMessage("agent", "متأسفانه در ارتباط با سرور خطایی رخ داد: " + err.message, "error");
     }
   });
+
+  function renderPlanRecommendation(plans) {
+    if (!plans || plans.length === 0) return;
+    const plansCard = document.createElement("div");
+    plansCard.className = "plans-recommendation-wrapper";
+    plansCard.innerHTML = `
+      <div class="plans-rec-header">
+        <span class="plans-rec-title">${icon("cpu")} پلن‌های پیشنهادی لیارا برای این پروژه</span>
+        <span class="plans-rec-sub">محاسبه‌شده بر اساس حجم سورس‌کد، فریم‌ورک و نیاز پردازشی</span>
+      </div>
+      <div class="plans-grid">
+        ${plans
+          .map((p) => {
+            const isRec = p.isRecommended || p.tier === "standard";
+            return `
+            <div class="plan-card-item ${isRec ? "recommended" : ""}" id="planCard_${p.planID}">
+              ${isRec ? `<div class="plan-ribbon">پیشنهادی</div>` : ""}
+              <div class="plan-item-name">${escapeHtml(p.name_fa)}</div>
+              <div class="plan-item-id"><code>${escapeHtml(p.planID)}</code></div>
+              <div class="plan-item-specs">
+                <div class="spec-row">
+                  <span>حافظه رم:</span>
+                  <strong>${Number(p.ramMB).toLocaleString("fa-IR")} مگابایت</strong>
+                </div>
+                <div class="spec-row">
+                  <span>پردازنده:</span>
+                  <strong>${p.cpuCores} هسته</strong>
+                </div>
+                <div class="spec-row">
+                  <span>دیسک:</span>
+                  <strong>${Number(p.diskGB).toLocaleString("fa-IR")} گیگابایت</strong>
+                </div>
+              </div>
+              <div class="plan-item-price">
+                <span class="price-val">${Number(p.monthlyPriceTomans).toLocaleString("fa-IR")}</span>
+                <span class="price-unit">تومان / ماه</span>
+              </div>
+              <button type="button" class="btn btn-sm ${isRec ? "btn-primary" : "btn-outline"} btn-select-plan" data-plan-id="${p.planID}">
+                ${isRec ? icon("check") + " انتخاب پلن پیشنهادی" : "انتخاب این پلن"}
+              </button>
+            </div>
+          `;
+          })
+          .join("")}
+      </div>
+    `;
+
+    chatFeed.appendChild(plansCard);
+    chatFeed.scrollTop = chatFeed.scrollHeight;
+
+    plansCard.querySelectorAll(".btn-select-plan").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const planId = btn.dataset.planId;
+        const selected = plans.find((p) => p.planID === planId);
+        if (!selected) return;
+
+        plansCard.querySelectorAll(".plan-card-item").forEach((c) => (c.style.outline = "none"));
+        const chosenCard = document.getElementById(`planCard_${planId}`);
+        if (chosenCard) chosenCard.style.outline = "2px solid var(--cyan)";
+
+        const activeCard = document.getElementById("activeApprovalCard");
+        if (activeCard) {
+          const costValueEl = activeCard.querySelector(".approval-field-row:nth-child(3) .field-value");
+          if (costValueEl) {
+            costValueEl.textContent = `${Number(selected.monthlyPriceTomans).toLocaleString("fa-IR")} تومان/ماه (${selected.name_fa})`;
+          }
+        }
+
+        appendChatMessage("user", `پلن «${selected.name_fa}» (${selected.planID}) انتخاب شد.`);
+      });
+    });
+  }
 
   // Quick Chips
   document.querySelectorAll(".chip-btn").forEach((chip) => {
